@@ -39,7 +39,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T31 | `examples/` research flow (subagent + MCP) with tests | 9 | T20, T30 | sa-dev-py | [T31](tasks/T31-example-research.md) | done |
 | T32 | `usage.py`: ledger callback, repository, `usage` CLI report (genai-prices at read time) | 10 | T06, T15 | sa-dev-py | [T32](tasks/T32-usage-ledger.md) | done |
 | T33 | OTel span attributes and metrics in the runner (incl. loop lag gauge) | 10 | T10, T16 | sa-dev-py | [T33](tasks/T33-otel-runner.md) | done |
-| T34 | `starter/` Copier template + `copier update` docs | 11 | T20, T23, T24 | sa-dev-py | [T34](tasks/T34-starter-copier.md) | todo |
+| T34 | `starter/` Copier template + `copier update` docs | 11 | T20, T23, T24 | sa-dev-py | [T34](tasks/T34-starter-copier.md) | done |
 | T35 | Bench run and exit check | 12 | all | sa-build-py | [T35](tasks/T35-bench-exit-check.md) | todo |
 
 ## Spikes (verify open checks before the dependent task; findings update `design.md`)
