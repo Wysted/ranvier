@@ -8,7 +8,7 @@ unblocks: [T35, S4]
 owner: sa-build-py
 reviewer: sa-review-py
 branch: task/T07-dev-compose
-status: todo
+status: done
 ---
 
 ## Goal
