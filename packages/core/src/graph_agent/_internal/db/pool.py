@@ -5,9 +5,9 @@ The caller owns the returned pools and closes them (lifespan / AsyncExitStack). 
 """
 
 import logging
-from typing import Any
 
-from psycopg.rows import dict_row
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -15,24 +15,30 @@ logger = logging.getLogger(__name__)
 MIN_POOL_SIZE = 1
 
 
-async def _open(url: str, max_size: int, kwargs: dict[str, Any]) -> AsyncConnectionPool:
+async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
+    """Pool for repositories and the migration runner."""
     pool = AsyncConnectionPool(
-        url, min_size=min(MIN_POOL_SIZE, max_size), max_size=max_size, kwargs=kwargs, open=False
+        url, name="graph_agent_app", min_size=MIN_POOL_SIZE, max_size=max_size, open=False
     )
     await pool.open(wait=True)
     return pool
 
 
-async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
-    """Pool for repositories and the migration runner."""
-    return await _open(url, max_size, {})
-
-
-async def open_checkpointer_pool(url: str, max_size: int) -> AsyncConnectionPool:
+async def open_checkpointer_pool(
+    url: str, max_size: int
+) -> AsyncConnectionPool[AsyncConnection[DictRow]]:
     """Pool settings required by `AsyncPostgresSaver`."""
-    return await _open(
-        url, max_size, {"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row}
+    pool = AsyncConnectionPool(
+        url,
+        connection_class=AsyncConnection[DictRow],
+        name="graph_agent_checkpointer",
+        min_size=MIN_POOL_SIZE,
+        max_size=max_size,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        open=False,
     )
+    await pool.open(wait=True)
+    return pool
 
 
 def log_connection_budget(app_max: int, checkpointer_max: int, procrastinate_max: int) -> int:

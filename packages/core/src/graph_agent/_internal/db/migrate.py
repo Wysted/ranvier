@@ -1,10 +1,17 @@
-"""Numbered-SQL migration runner (OD-5): `migrations/NNNN_name.sql`, one transaction each."""
+"""Numbered-SQL migration runner (OD-5): `migrations/NNNN_name.sql`, one transaction each.
 
+One file per transaction means `CREATE INDEX CONCURRENTLY` (not allowed in a transaction block)
+is not supported.
+"""
+
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from importlib import resources
+from typing import Any
 
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -44,37 +51,53 @@ def discover_migrations() -> list[Migration]:
 
 async def apply_migrations(pool: AsyncConnectionPool) -> list[int]:
     """Apply pending migrations under a session advisory lock; return the versions applied."""
-    migrations = discover_migrations()
+    # importlib.resources does sync file I/O; keep it off the event loop.
+    migrations = await asyncio.to_thread(discover_migrations)
     applied_now: list[int] = []
     async with pool.connection() as conn:
-        # Session-level lock + per-file transactions need autocommit on this connection.
-        await conn.set_autocommit(True)
-        await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
         try:
-            await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-            await conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {SCHEMA}.schema_version ("
-                "version integer PRIMARY KEY, name text NOT NULL, "
-                "applied_at timestamptz NOT NULL DEFAULT now())"
-            )
-            cur = await conn.execute(f"SELECT version FROM {SCHEMA}.schema_version")
-            applied = {row[0] for row in await cur.fetchall()}
-            known = {m.version for m in migrations}
-            if missing := sorted(applied - known):
-                raise MigrationError(f"applied versions without a migration file: {missing}")
-            for mig in migrations:
-                if mig.version in applied:
-                    continue
-                async with conn.transaction():
-                    # no params => simple protocol, so a file may hold many statements
-                    await conn.execute(mig.sql)
-                    await conn.execute(
-                        f"INSERT INTO {SCHEMA}.schema_version (version, name) VALUES (%s, %s)",
-                        (mig.version, mig.name),
-                    )
-                applied_now.append(mig.version)
-                logger.info("applied migration %s", mig.name)
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+            # Session-level lock + per-file transactions need autocommit on this connection.
+            await conn.set_autocommit(True)
+            await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+            try:
+                applied_now = await _apply_pending(conn, migrations)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
             await conn.set_autocommit(False)
+        except BaseException:
+            # Session state (lock, autocommit) is unknown: close so the pool discards the
+            # connection and the server releases the advisory lock.
+            await conn.close()
+            raise
+    return applied_now
+
+
+async def _apply_pending(
+    conn: AsyncConnection[tuple[Any, ...]], migrations: list[Migration]
+) -> list[int]:
+    await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+    await conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {SCHEMA}.schema_version ("
+        "version integer PRIMARY KEY, name text NOT NULL, "
+        "applied_at timestamptz NOT NULL DEFAULT now())"
+    )
+    cur = await conn.execute(f"SELECT version FROM {SCHEMA}.schema_version")
+    applied = {row[0] for row in await cur.fetchall()}
+    known = {m.version for m in migrations}
+    if missing := sorted(applied - known):
+        raise MigrationError(f"applied versions without a migration file: {missing}")
+    pending = [m for m in migrations if m.version not in applied]
+    if applied and (stale := [m.version for m in pending if m.version < max(applied)]):
+        raise MigrationError(f"pending migrations older than the latest applied: {stale}")
+    applied_now: list[int] = []
+    for mig in pending:
+        async with conn.transaction():
+            # no params => simple protocol, so a file may hold many statements
+            await conn.execute(mig.sql)
+            await conn.execute(
+                f"INSERT INTO {SCHEMA}.schema_version (version, name) VALUES (%s, %s)",
+                (mig.version, mig.name),
+            )
+        applied_now.append(mig.version)
+        logger.info("applied migration %s", mig.name)
     return applied_now

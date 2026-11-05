@@ -21,8 +21,14 @@ CREATE TABLE graph_agent.runs (
     started_at        timestamptz,
     finished_at       timestamptz,
     metadata          jsonb NOT NULL DEFAULT '{}'::jsonb,
-    -- Exactly one of input / command is set.
-    CONSTRAINT runs_input_xor_command CHECK ((input IS NULL) <> (command IS NULL))
+    -- Exactly one of input / command is set (JSON null counts as absent).
+    CONSTRAINT runs_input_xor_command CHECK (
+        (input IS NULL OR jsonb_typeof(input) = 'null')
+        <> (command IS NULL OR jsonb_typeof(command) = 'null')
+    ),
+    CONSTRAINT runs_running_has_lease CHECK (
+        status <> 'running' OR (lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL)
+    )
 );
 
 -- At most one running run per thread, whatever the entry path.
