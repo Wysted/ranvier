@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, aclosing
 from http import HTTPStatus
 from typing import Annotated, Any, Final
@@ -27,10 +27,14 @@ from graph_agent._internal.api.dto import (
 )
 from graph_agent._internal.bootstrap import Container
 from graph_agent._internal.limits import TooManyRuns
-from graph_agent._internal.runtime.checkpointer import Checkpointer
-from graph_agent._internal.runtime.events import INTERRUPT_KEY, EndEvent, ErrorEvent
+from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
 from graph_agent._internal.runtime.flows import check_version
-from graph_agent._internal.runtime.runner import ActiveRuns, execute_run
+from graph_agent._internal.runtime.runner import (
+    ActiveRuns,
+    check_thread_command,
+    execute_run,
+    pending_interrupts,
+)
 from graph_agent._internal.runtime.runs import (
     ErrorCode,
     Run,
@@ -68,36 +72,6 @@ def _runs(container: Container) -> RunsRepository:
     return container.runs
 
 
-# -- pending interrupts ---------------------------------------------------------------------------
-# shortcut: local stand-ins for the runner helpers T18 adds to runtime/runner.py (same names);
-# delete both and import them from there once T18 is merged.
-
-
-async def pending_interrupts(checkpointer: Checkpointer, thread_id: uuid.UUID) -> list[str]:
-    """Ids of the interrupts pending on the thread's latest checkpoint."""
-    latest = await checkpointer.aget_tuple({"configurable": {"thread_id": str(thread_id)}})
-    ids: list[str] = []
-    for _task, channel, value in latest.pending_writes or [] if latest else []:
-        if channel == INTERRUPT_KEY:
-            ids.extend(i.id for i in (value if isinstance(value, (list, tuple)) else [value]))
-    return ids
-
-
-def check_thread_command(pending: Sequence[str], *, input: object, resume: object) -> None:
-    if input is not None:
-        if pending:
-            raise RunError(
-                ErrorCode.THREAD_INTERRUPTED, "thread has pending interrupts: send 'command'"
-            )
-        return
-    is_map = isinstance(resume, dict) and bool(resume) and set(resume) <= set(pending)
-    if not is_map and len(pending) != 1:
-        raise RunError(
-            ErrorCode.INVALID_REQUEST,
-            f"a bare resume value needs exactly one pending interrupt, found {len(pending)}",
-        )
-
-
 # -- helpers --------------------------------------------------------------------------------------
 
 
@@ -122,7 +96,7 @@ async def _check_request(
     compiled = await container.flows.get(req.flow)  # flow_not_found / flow_build_failed
     pin = await _runs(container).thread_pin(thread_id)
     if pin is None:
-        pending: list[str] = []
+        pending: tuple[str, ...] = ()
         version, tenant = compiled.version, principal.tenant_id
     else:
         _own(pin, principal)

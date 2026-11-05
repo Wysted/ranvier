@@ -184,6 +184,18 @@ async def test_interrupt_then_resume(client: httpx.AsyncClient) -> None:
     assert state["values"]["answer"] == "Ada" and state["interrupts"] == []
 
 
+@pytest.mark.parametrize("resume", [{}, {"f" * 32: "x"}], ids=["empty-map", "foreign-id"])
+async def test_invalid_resume_maps_are_rejected(client: httpx.AsyncClient, resume: object) -> None:
+    first = _sse(await _stream(client, {"flow": "ask", "input": {}}))
+    thread = first[0][1]["thread_id"]
+    response = await _stream(client, {"flow": "ask", "command": {"resume": resume}}, thread)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.json()["code"] == "invalid_request"
+    # The rejected command left the thread resumable.
+    ok = _sse(await _stream(client, {"flow": "ask", "command": {"resume": "Ada"}}, thread))
+    assert ok[-1][1]["status"] == "success"
+
+
 async def test_resume_without_a_pending_interrupt_is_rejected(client: httpx.AsyncClient) -> None:
     response = await _stream(client, {"flow": "echo", "command": {"resume": "x"}})
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
