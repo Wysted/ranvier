@@ -39,8 +39,9 @@ def create_memory_checkpointer() -> InMemorySaver:
 async def setup_checkpointer(pool: CheckpointerPool) -> None:
     """Create/migrate the checkpoint tables. Idempotent (upstream tracks `checkpoint_migrations`).
 
-    Precondition: the caller holds the migrations session advisory lock (`pg_advisory_lock`) on a
-    connection with no open transaction, so concurrent `migrate` runs cannot race here. The pool
-    must be autocommit (as `open_checkpointer_pool` is): setup runs `CREATE INDEX CONCURRENTLY`.
+    Precondition: the caller holds the migrations session advisory lock (`advisory_lock`, which
+    polls `pg_try_advisory_lock`) on a connection with no open transaction, so concurrent
+    `migrate` runs cannot race here. The pool must be autocommit (as `open_checkpointer_pool` is):
+    setup runs `CREATE INDEX CONCURRENTLY`.
     """
     await create_checkpointer(pool).setup()

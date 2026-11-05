@@ -8,7 +8,6 @@ events and interrupts map exactly as in production. It applies no run timeout: b
 from __future__ import annotations
 
 import math
-import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import aclosing
@@ -43,7 +42,13 @@ from graph_agent._internal.runtime.events import (
 )
 from graph_agent._internal.runtime.flows import CompiledFlow, to_builder
 from graph_agent._internal.runtime.offline import FakeChatModel as _OfflineFakeChatModel
-from graph_agent._internal.runtime.runner import CLIENT_STREAM_MODES, stream_graph
+from graph_agent._internal.runtime.runner import (
+    CLIENT_STREAM_MODES,
+    check_thread_command,
+    is_resume_map,
+    stream_graph,
+)
+from graph_agent._internal.runtime.runs import RunError
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -72,8 +77,6 @@ FLOW_NAME = "test"
 FLOW_VERSION = 1
 # Every client mode, so tests can assert on any event.
 _STREAM_MODES = sorted(CLIENT_STREAM_MODES)
-# LangGraph treats a resume dict as an id map when every key looks like this (pregel/_loop.py).
-_INTERRUPT_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class FakeChatModel(_OfflineFakeChatModel):
@@ -144,22 +147,13 @@ def flow_context(
 async def _resume_command(
     graph: CompiledStateGraph[Any, Any, Any, Any], config: RunnableConfig, resume: Any
 ) -> Command[Any]:
-    """Bare value for exactly one pending interrupt, otherwise a map of interrupt id -> value."""
+    """Same rule as the CLI and API: `check_thread_command` over the thread's pending ids."""
     pending = [i.id for i in (await graph.aget_state(config)).interrupts]
-    if not pending:
-        raise ValueError("resume given but the thread has no pending interrupt")
-    if isinstance(resume, Mapping) and all(
-        isinstance(k, str) and _INTERRUPT_ID.fullmatch(k) for k in resume
-    ):
-        if not resume or not set(resume) <= set(pending):
-            raise ValueError(f"resume map must hold only pending interrupt ids: {pending}")
-        return Command(resume=dict(resume))
-    if len(pending) == 1:
-        return Command(resume=resume)
-    raise ValueError(
-        f"{len(pending)} interrupts are pending: resume with a map of interrupt id -> value "
-        f"(ids: {pending})"
-    )
+    try:
+        check_thread_command(pending, input=None, resume=resume)
+    except RunError as exc:
+        raise ValueError(exc.message) from exc
+    return Command(resume=dict(resume) if is_resume_map(resume) else resume)
 
 
 async def run_flow(

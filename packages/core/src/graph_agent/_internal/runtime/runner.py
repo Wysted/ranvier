@@ -9,9 +9,10 @@ import asyncio
 import logging
 import math
 import os
+import re
 import socket
 import uuid
-from collections.abc import AsyncGenerator, Coroutine, Iterator, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,6 +27,7 @@ from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.context import RunContext
 from graph_agent._internal.runtime.events import (
+    INTERRUPT_KEY,
     CustomEvent,
     EndEvent,
     ErrorEvent,
@@ -302,13 +304,7 @@ async def execute_run(
                 yield _error_event(flow_error)
             return
 
-        config: RunnableConfig = {
-            "configurable": {"thread_id": ctx.thread_id},
-            # Platform keys win: a client cannot spoof the recovery check's `run_id`.
-            "metadata": {**run.metadata, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
-        }
-        if flow.max_concurrency is not None:
-            config["max_concurrency"] = flow.max_concurrency
+        config = run_config(ctx, flow, run.metadata)
         initial = await _initial_input(container.checkpointer, run)
         queue: asyncio.Queue[RunEvent] = asyncio.Queue(RUN_EVENT_BUFFER)
         with container.active_runs.track() as control:
@@ -412,6 +408,69 @@ async def execute_run(
         if attempt.pump is not None:
             attempt.pump.cancel()
         container.active_runs.end(attempt)
+
+
+def run_config(ctx: RunContext, flow: CompiledFlow, metadata: dict[str, Any]) -> RunnableConfig:
+    """The `astream` config of one run; platform keys win so a client cannot spoof `run_id`."""
+    config: RunnableConfig = {
+        "configurable": {"thread_id": ctx.thread_id},
+        "metadata": {**metadata, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
+    }
+    if flow.max_concurrency is not None:
+        config["max_concurrency"] = flow.max_concurrency
+    return config
+
+
+async def pending_interrupts(checkpointer: Checkpointer, thread_id: uuid.UUID) -> tuple[str, ...]:
+    """Ids of the interrupts the thread's latest checkpoint is still waiting on."""
+    latest = await checkpointer.aget_tuple({"configurable": {"thread_id": str(thread_id)}})
+    if latest is None:
+        return ()
+    ids: list[str] = []
+    for _task, channel, value in latest.pending_writes or ():
+        if channel == INTERRUPT_KEY:
+            ids.extend(i.id for i in (value if isinstance(value, (list, tuple)) else (value,)))
+    return tuple(ids)
+
+
+# LangGraph's own rule (pregel/_loop.py): a resume dict is an id map iff every key looks like this.
+INTERRUPT_ID: Final = re.compile(r"[0-9a-f]{32}")
+
+
+def is_resume_map(resume: object) -> bool:
+    """Whether LangGraph reads `resume` as `{interrupt_id: value}` (`{}` included)."""
+    return isinstance(resume, Mapping) and all(
+        isinstance(k, str) and INTERRUPT_ID.fullmatch(k) for k in resume
+    )
+
+
+def check_thread_command(pending: Sequence[str], *, input: object, resume: object) -> None:
+    """Reject a command LangGraph would drop or fail on obscurely (design section 5).
+
+    A map (`is_resume_map`) must be non-empty with only pending ids; anything else is a bare
+    value and needs exactly one pending interrupt. `None` means absent.
+    """
+    if input is not None:
+        if pending:
+            raise RunError(
+                ErrorCode.THREAD_INTERRUPTED,
+                f"thread has {len(pending)} pending interrupt(s); resume instead of sending input",
+            )
+        return
+    if resume is None:
+        return
+    if isinstance(resume, Mapping) and is_resume_map(resume):
+        if not resume or not set(resume) <= set(pending):
+            raise RunError(
+                ErrorCode.INVALID_REQUEST,
+                f"resume map must be non-empty with only pending interrupt ids: {list(pending)}",
+            )
+    elif len(pending) != 1:
+        raise RunError(
+            ErrorCode.INVALID_REQUEST,
+            f"a bare resume value needs exactly one pending interrupt, the thread has "
+            f"{len(pending)}: send a map {{interrupt_id: value}}",
+        )
 
 
 async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:

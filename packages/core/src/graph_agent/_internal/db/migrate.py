@@ -7,6 +7,8 @@ is not supported.
 import asyncio
 import logging
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib import resources
 from typing import Any
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 SCHEMA = "graph_agent"
 # Arbitrary constant shared by every process that migrates this database.
 ADVISORY_LOCK_KEY = 0x6772617068  # "graph"
+MIGRATION_LOCK_POLL_S = 0.2
 _FILE_RE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 
 
@@ -49,27 +52,64 @@ def discover_migrations() -> list[Migration]:
     return [found[v] for v in sorted(found)]
 
 
-async def apply_migrations(pool: AsyncConnectionPool) -> list[int]:
-    """Apply pending migrations under a session advisory lock; return the versions applied."""
-    # importlib.resources does sync file I/O; keep it off the event loop.
-    migrations = await asyncio.to_thread(discover_migrations)
-    applied_now: list[int] = []
+async def _lock_holder(conn: AsyncConnection[tuple[Any, ...]]) -> int | None:
+    # Session advisory locks of one key: classid/objid hold the two halves of the bigint key.
+    cur = await conn.execute(
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+        "AND ((classid::bigint << 32) | objid::bigint) = %s",
+        (ADVISORY_LOCK_KEY,),
+    )
+    row = await cur.fetchone()
+    return None if row is None else row[0]
+
+
+@asynccontextmanager
+async def advisory_lock(
+    pool: AsyncConnectionPool,
+) -> AsyncIterator[AsyncConnection[tuple[Any, ...]]]:
+    """Hold the migrations session advisory lock; yield its autocommit connection.
+
+    Polls `pg_try_advisory_lock` instead of blocking: a blocked `pg_advisory_lock` keeps a
+    snapshot that makes the holder's `CREATE INDEX CONCURRENTLY` wait forever (an undetected
+    deadlock, since the lock is held by another idle connection).
+    """
     async with pool.connection() as conn:
         try:
             # Session-level lock + per-file transactions need autocommit on this connection.
             await conn.set_autocommit(True)
-            await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
-            try:
-                applied_now = await _apply_pending(conn, migrations)
-            finally:
-                await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+            waiting = False
+            while True:
+                cur = await conn.execute("SELECT pg_try_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+                row = await cur.fetchone()
+                if row is not None and row[0]:
+                    break
+                if not waiting:  # no deadline: log once so a stuck migrate is not silent
+                    waiting = True
+                    logger.warning(
+                        "migration lock is held by pid %s; waiting", await _lock_holder(conn)
+                    )
+                await asyncio.sleep(MIGRATION_LOCK_POLL_S)
+            yield conn
+            await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
             await conn.set_autocommit(False)
         except BaseException:
             # Session state (lock, autocommit) is unknown: close so the pool discards the
             # connection and the server releases the advisory lock.
             await conn.close()
             raise
-    return applied_now
+
+
+async def apply_migrations(pool: AsyncConnectionPool) -> list[int]:
+    """Apply pending migrations under the advisory lock; return the versions applied."""
+    async with advisory_lock(pool) as conn:
+        return await apply_migrations_locked(conn)
+
+
+async def apply_migrations_locked(conn: AsyncConnection[tuple[Any, ...]]) -> list[int]:
+    """Apply pending migrations on a connection that holds `advisory_lock` (autocommit)."""
+    # importlib.resources does sync file I/O; keep it off the event loop.
+    migrations = await asyncio.to_thread(discover_migrations)
+    return await _apply_pending(conn, migrations)
 
 
 async def _apply_pending(

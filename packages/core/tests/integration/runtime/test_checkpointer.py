@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncIterator
 
+import psycopg
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import empty_checkpoint
@@ -17,6 +18,8 @@ POOL_MAX_SIZE = 3
 
 @pytest.fixture
 async def pool(clean_database: str) -> AsyncIterator[CheckpointerPool]:
+    with psycopg.connect(clean_database, autocommit=True) as conn:
+        conn.execute("CREATE SCHEMA graph_agent")  # `migrate` creates it before the saver setup
     pool = await open_checkpointer_pool(clean_database, max_size=POOL_MAX_SIZE)
     try:
         yield pool
@@ -59,3 +62,19 @@ async def test_run_id_round_trip_and_drain_resume(
     result = await graph.ainvoke(None, config, control=RunControl(), durability=durability)
     assert result["trace"] == ["first", "second"]
     assert calls == ["first", "second"]
+
+
+async def test_pool_merges_url_options_with_the_pinned_search_path(clean_database: str) -> None:
+    sep = "&" if "?" in clean_database else "?"
+    url = f"{clean_database}{sep}options=-c%20statement_timeout%3D12345"
+    pool = await open_checkpointer_pool(url, max_size=1)
+    try:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT current_setting('search_path') AS sp, "
+                "current_setting('statement_timeout') AS st"
+            )
+            row = await cur.fetchone()
+    finally:
+        await pool.close()
+    assert row == {"sp": "graph_agent", "st": "12345ms"}

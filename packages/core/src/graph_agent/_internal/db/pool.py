@@ -7,8 +7,11 @@ The caller owns the returned pools and closes them (lifespan / AsyncExitStack). 
 import logging
 
 from psycopg import AsyncConnection
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
+
+from graph_agent._internal.db.migrate import SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,14 @@ async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
     return pool
 
 
+def _pinned_options(url: str) -> str:
+    """The URL's `options` plus `-c search_path=graph_agent`, which pins the saver tables to our
+    schema whatever the role is called (appended last so it wins over a URL `search_path`)."""
+    existing = conninfo_to_dict(url).get("options")
+    pin = f"-c search_path={SCHEMA}"
+    return f"{existing} {pin}" if existing else pin
+
+
 async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
     """Pool settings required by `AsyncPostgresSaver`."""
     pool = AsyncConnectionPool(
@@ -34,7 +45,12 @@ async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
         name="graph_agent_checkpointer",
         min_size=MIN_POOL_SIZE,
         max_size=max_size,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "row_factory": dict_row,
+            "options": _pinned_options(url),
+        },
         open=False,
     )
     await pool.open(wait=True)
