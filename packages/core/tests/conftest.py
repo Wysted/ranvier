@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 
+import langgraph.graph  # noqa: F401  # first import does blocking I/O; keep it out of blockbuster
 import pytest
 from blockbuster import blockbuster_ctx
 

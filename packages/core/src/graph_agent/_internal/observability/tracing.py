@@ -5,14 +5,19 @@ is imported lazily by `setup_observability`, only when `observability.otel_enabl
 needs the `[otel]` extra.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from graph_agent._internal.config.settings import Settings
+if TYPE_CHECKING:
+    # Annotation only: the facade imports this module (AGENT_METADATA_KEY) and must stay light.
+    from graph_agent._internal.config.settings import Settings
+
 
 logger = logging.getLogger(__name__)
 
