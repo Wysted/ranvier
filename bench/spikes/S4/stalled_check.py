@@ -56,7 +56,9 @@ async def snapshot(conn: psycopg.AsyncConnection, title: str) -> None:
     print(f"[{title}] jobs={jobs} workers={[r[0] for r in await cur.fetchall()]}")
 
 
-async def wait_log(conn: psycopg.AsyncConnection, label: str, what: str, timeout: float) -> None:
+async def wait_log(
+    conn: psycopg.AsyncConnection, label: str, what: str, timeout: float
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         cur = await conn.execute(
@@ -72,7 +74,9 @@ async def drive() -> None:
     recreate_db(DB)
     async with app.open_async():
         await app.schema_manager.apply_schema_async()
-        async with await psycopg.AsyncConnection.connect(dsn(DB), autocommit=True) as conn:
+        async with await psycopg.AsyncConnection.connect(
+            dsn(DB), autocommit=True
+        ) as conn:
             await conn.execute(
                 "CREATE TABLE s4_log (label text, what text, at timestamptz DEFAULT now())"
             )
@@ -90,13 +94,20 @@ async def drive() -> None:
             )
             print("get_stalled_jobs right after kill:", [j.id for j in stalled])
 
-            w2 = spawn("1")  # a fresh worker prunes dead workers at startup, nothing more
+            w2 = spawn(
+                "1"
+            )  # a fresh worker prunes dead workers at startup, nothing more
             await asyncio.sleep(STALLED_TIMEOUT_S + 2)
             await snapshot(conn, f"w2 running, {STALLED_TIMEOUT_S + 2:.0f}s later")
             stalled = list(
-                await app.job_manager.get_stalled_jobs(seconds_since_heartbeat=STALLED_TIMEOUT_S)
+                await app.job_manager.get_stalled_jobs(
+                    seconds_since_heartbeat=STALLED_TIMEOUT_S
+                )
             )
-            print("get_stalled_jobs:", [(j.id, j.task_kwargs["label"], j.attempts) for j in stalled])
+            print(
+                "get_stalled_jobs:",
+                [(j.id, j.task_kwargs["label"], j.attempts) for j in stalled],
+            )
             assert [j.task_kwargs["label"] for j in stalled] == ["J1"]
             for job in stalled:
                 await app.job_manager.retry_job(job)

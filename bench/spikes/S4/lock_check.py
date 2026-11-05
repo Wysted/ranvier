@@ -66,23 +66,21 @@ async def main() -> None:
         q = app.configure_task(name="sleeper", lock="q", queueing_lock="run-1")
         await q.defer_async(label="Q1")
         try:
-            await app.configure_task(name="sleeper", lock="q", queueing_lock="run-1").defer_async(
-                label="Q1-dup"
-            )
+            await q.defer_async(label="Q1-dup")
             print("queueing_lock while todo: second defer ACCEPTED")
         except exceptions.AlreadyEnqueued:
             print("queueing_lock while todo: second defer -> AlreadyEnqueued")
 
         worker = asyncio.create_task(
-            app.run_worker_async(concurrency=CONCURRENCY, wait=True, fetch_job_polling_interval=0.2)
+            app.run_worker_async(
+                concurrency=CONCURRENCY, wait=True, fetch_job_polling_interval=0.2
+            )
         )
         while not any(lbl == "Q1" and w == "start" for _, lbl, w in events):
             await asyncio.sleep(0.05)
         await asyncio.sleep(0.1)  # Q1 is `doing` now
         try:
-            await app.configure_task(name="sleeper", lock="q", queueing_lock="run-1").defer_async(
-                label="Q1-redefer"
-            )
+            await q.defer_async(label="Q1-redefer")
             print("queueing_lock while doing: second defer ACCEPTED (waits on lock q)")
         except exceptions.AlreadyEnqueued:
             print("queueing_lock while doing: second defer -> AlreadyEnqueued")
@@ -109,8 +107,12 @@ async def main() -> None:
     assert at[("A2", "start")] >= at[("A1", "end")], "same lock overlapped"
     assert at[("B1", "start")] < at[("A1", "end")], "different locks did not overlap"
     # Scenario 2: C2 waits for C1's retry (head-of-line), even while C1 sits in `todo`
-    assert at[("C2", "start")] >= at[("C1", "end")], "C2 ran between C1's failure and retry"
-    assert at[("E2", "start")] >= at[("E1", "fail attempt 2")], "E2 ran before E1 was exhausted"
+    assert at[("C2", "start")] >= at[("C1", "end")], (
+        "C2 ran between C1's failure and retry"
+    )
+    assert at[("E2", "start")] >= at[("E1", "fail attempt 2")], (
+        "E2 ran before E1 was exhausted"
+    )
     drop_db(DB)
     print("lock_check: OK")
 

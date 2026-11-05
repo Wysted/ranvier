@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from common import PORT, dsn, drop_db, recreate_db
+from common import PORT, drop_db, dsn, recreate_db
 from graph_agent._internal.db.pool import open_checkpointer_pool
 from graph_agent._internal.runtime.checkpointer import PooledPostgresSaver
 from langgraph.checkpoint.base import empty_checkpoint
@@ -77,7 +77,9 @@ async def one_run(saver: AsyncPostgresSaver) -> None:
         cp["channel_values"] = {"messages": [PAYLOAD] * step}
         cp["channel_versions"] = {"messages": str(step)}
         config = await saver.aput(config, cp, {"step": step}, {"messages": str(step)})
-        await saver.aput_writes(config, [("messages", PAYLOAD)], task_id=str(uuid.uuid4()))
+        await saver.aput_writes(
+            config, [("messages", PAYLOAD)], task_id=str(uuid.uuid4())
+        )
     assert await saver.aget_tuple(config) is not None
 
 
@@ -127,9 +129,10 @@ async def main() -> None:
         "direct": dsn(DB),
         f"+{2 * ONE_WAY_MS:g}ms RTT": dsn(DB).replace(f":{PORT}/", f":{proxy_port}/"),
     }
-    print(f"RUNS={RUNS} STEPS={STEPS} -> {RUNS * STEPS * 2 + RUNS} DB calls per sample, "
-          f"median of {REPEATS}")
-    results: dict[tuple[str, str, int], float] = {}
+    print(
+        f"RUNS={RUNS} STEPS={STEPS} -> {RUNS * STEPS * 2 + RUNS} DB calls per sample, "
+        f"median of {REPEATS}"
+    )
     for net, url in urls.items():
         await bench(url, "pooled", 2)  # warm-up
         for size in POOL_SIZES:
@@ -137,11 +140,14 @@ async def main() -> None:
                 samples = [await bench(url, variant, size) for _ in range(REPEATS)]
                 wall = statistics.median(s[0] for s in samples)
                 inflight = max(s[1] for s in samples)
-                results[(net, variant, size)] = wall
-                print(f"{net:>12} pool={size:<2} {variant:<12} wall={wall * 1000:7.1f} ms "
-                      f"calls/s={(RUNS * STEPS * 2 + RUNS) / wall:7.0f} inflight={inflight}")
+                print(
+                    f"{net:>12} pool={size:<2} {variant:<12} wall={wall * 1000:7.1f} ms "
+                    f"calls/s={(RUNS * STEPS * 2 + RUNS) / wall:7.0f} inflight={inflight}"
+                )
     for cls in (AsyncPostgresSaver, PooledPostgresSaver):
-        print(f"nested aget_tuple inside alist, {cls.__name__}: {await nested_in_alist(dsn(DB), cls)}")
+        print(
+            f"nested aget_tuple inside alist, {cls.__name__}: {await nested_in_alist(dsn(DB), cls)}"
+        )
     proxy.close()
     drop_db(DB)
     print("saver_check: OK")

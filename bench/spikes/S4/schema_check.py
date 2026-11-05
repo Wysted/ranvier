@@ -29,19 +29,22 @@ JSON_OBJECT_RE = re.compile(r"json_object\('type': ('[a-z_]+'), 'job_id': NEW\.i
 
 
 def shipped() -> list[str]:
-    return sorted(p.name for p in pathlib.Path(SchemaManager.get_migrations_path()).glob("*.sql"))
+    return sorted(
+        p.name for p in pathlib.Path(SchemaManager.get_migrations_path()).glob("*.sql")
+    )
 
 
 def install(db: str) -> None:
     recreate_db(db)
-    with psycopg.connect(dsn(db), autocommit=True) as conn:
-        with conn.transaction():
-            conn.execute(SchemaManager.get_schema())  # no params: '%' needs no escaping
-            conn.execute(f"CREATE TABLE {TRACK} (name text PRIMARY KEY)")
-            for name in shipped():
-                conn.execute(f"INSERT INTO {TRACK} VALUES (%s)", (name,))
-    print(f"install {db}: procrastinate {importlib.metadata.version('procrastinate')}, "
-          f"baseline={len(shipped())} files, last={shipped()[-1]}")
+    with psycopg.connect(dsn(db), autocommit=True) as conn, conn.transaction():
+        conn.execute(SchemaManager.get_schema())  # no params: '%' needs no escaping
+        conn.execute(f"CREATE TABLE {TRACK} (name text PRIMARY KEY)")
+        for name in shipped():
+            conn.execute(f"INSERT INTO {TRACK} VALUES (%s)", (name,))
+    print(
+        f"install {db}: procrastinate {importlib.metadata.version('procrastinate')}, "
+        f"baseline={len(shipped())} files, last={shipped()[-1]}"
+    )
 
 
 def upgrade(db: str) -> None:
@@ -53,8 +56,10 @@ def upgrade(db: str) -> None:
             with conn.transaction():
                 conn.execute(path.joinpath(name).read_text(encoding="utf-8"))
                 conn.execute(f"INSERT INTO {TRACK} VALUES (%s)", (name,))
-    print(f"upgrade {db}: procrastinate {importlib.metadata.version('procrastinate')}, "
-          f"applied={pending}")
+    print(
+        f"upgrade {db}: procrastinate {importlib.metadata.version('procrastinate')}, "
+        f"applied={pending}"
+    )
 
 
 def reapply(db: str) -> None:
@@ -64,21 +69,43 @@ def reapply(db: str) -> None:
             with conn.transaction():
                 conn.execute(SchemaManager.get_schema())
         except psycopg.errors.DuplicateObject as exc:
-            print(f"reapply {db}: schema.sql over an installed schema -> {type(exc).__name__}: {exc}")
+            print(
+                f"reapply {db}: schema.sql over an installed schema -> {type(exc).__name__}: {exc}"
+            )
             return
     raise AssertionError("schema.sql applied twice without error")
 
 
 def dump(db: str) -> list[str]:
     out = subprocess.run(
-        ["docker", "exec", CONTAINER, "pg_dump", "-U", "graph_agent", "-s", "--no-owner",
-         "--exclude-table", TRACK, db],
-        check=True, capture_output=True, text=True,
+        [
+            "docker",
+            "exec",
+            CONTAINER,
+            "pg_dump",
+            "-U",
+            "graph_agent",
+            "-s",
+            "--no-owner",
+            "--exclude-table",
+            TRACK,
+            db,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout
-    lines = [ln for ln in out.splitlines() if ln and not ln.startswith(("--", "\\restrict", "\\unrestrict"))]
+    lines = [
+        ln
+        for ln in out.splitlines()
+        if ln and not ln.startswith(("--", "\\restrict", "\\unrestrict"))
+    ]
     # Known, equivalent drift: 3.0.0's schema used json_object('k': v) (PG16+ syntax); upstream
     # later rewrote schema.sql and 03.00.00_01_pre in place to json_build_object, no new migration.
-    return [JSON_OBJECT_RE.sub(r"json_build_object('type', \1, 'job_id', NEW.id)", ln) for ln in lines]
+    return [
+        JSON_OBJECT_RE.sub(r"json_build_object('type', \1, 'job_id', NEW.id)", ln)
+        for ln in lines
+    ]
 
 
 def compare(a: str, b: str) -> None:

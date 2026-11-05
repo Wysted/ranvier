@@ -7,7 +7,7 @@ from procrastinate import App, PsycopgConnector
 
 HOST = os.environ.get("S4_PGHOST", "127.0.0.1")
 PORT = os.environ.get("S4_PGPORT", "25432")
-# Dev-only compose credentials (compose.yaml); never real secrets.
+# Dev-only compose credentials (docker-compose.yml); never real secrets.
 ADMIN_DSN = f"postgresql://graph_agent:graph_agent@{HOST}:{PORT}/graph_agent"
 
 
@@ -31,4 +31,6 @@ def drop_db(db: str) -> None:
 
 
 def make_app(db: str, max_size: int = 5) -> App:
-    return App(connector=PsycopgConnector(conninfo=dsn(db), min_size=1, max_size=max_size))
+    return App(
+        connector=PsycopgConnector(conninfo=dsn(db), min_size=1, max_size=max_size)
+    )
