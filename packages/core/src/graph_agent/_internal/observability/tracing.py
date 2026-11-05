@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    # Annotation only: the facade imports this module (AGENT_METADATA_KEY) and must stay light.
+    # Annotation only: the facade imports this module and must stay light.
     from graph_agent._internal.config.settings import Settings
 
 
@@ -24,8 +24,6 @@ logger = logging.getLogger(__name__)
 ATTR_FLOW = "graph_agent.flow"
 ATTR_RUN_ID = "graph_agent.run_id"
 ATTR_THREAD_ID = "graph_agent.thread_id"
-# Callback metadata key carrying AgentSpec.name; the usage ledger reads it (S3).
-AGENT_METADATA_KEY = "graph_agent_agent"
 
 OTEL_EXTRA = "otel"
 _OTEL_PACKAGES = frozenset({"opentelemetry", "openinference"})

@@ -8,8 +8,6 @@ import asyncio
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from graph_agent._internal.observability.tracing import AGENT_METADATA_KEY
-
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -34,6 +32,7 @@ async def build_agent(
     from langchain.agents import create_agent
 
     from graph_agent._internal.agents.skills import SkillsMiddleware
+    from graph_agent._internal.usage import AGENT_METADATA_KEY  # loads langchain: keep it lazy
 
     # SKILL.md files are read synchronously in the constructor.
     middleware = list(spec.middleware)

@@ -95,13 +95,13 @@ include_external_packages = true
 name = "C1 layers"
 type = "layers"
 containers = ["graph_agent._internal"]
-# Parenthesized layers do not exist yet (worker/usage/queue land later).
+# Parenthesized layers do not exist yet (worker/queue land later).
 layers = [
     "cli | api | (worker)",
     "bootstrap",
     "runtime",
     "agents",
-    "llm | limits | (usage) | observability | (queue)",
+    "llm | limits | usage | observability | (queue)",
     "db | config",
 ]
 

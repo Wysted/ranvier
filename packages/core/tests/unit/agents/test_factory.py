@@ -24,7 +24,7 @@ from graph_agent._internal.agents.tools import ToolRegistry
 from graph_agent._internal.config.manifest import LlmSettings, ToolSpec
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.llm import LlmRegistry
-from graph_agent._internal.observability.tracing import AGENT_METADATA_KEY
+from graph_agent._internal.usage import AGENT_METADATA_KEY
 
 LIMIT_S = 0.05
 LONGER_THAN_LIMIT_S = 0.3
