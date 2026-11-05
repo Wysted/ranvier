@@ -279,7 +279,7 @@ Claims make both recovery paths idempotent: the job that loses the claim exits. 
 
 ### Interrupts, cancellation, idempotency
 
-- **Interrupts**: the run ends `interrupted`; the checkpoint is the source of truth (`GET /threads/{id}/state`). Resume sends `command.resume` as a map `{interrupt_id: value}` (a bare value is accepted only with exactly one pending interrupt). New `input` on a thread with pending interrupts is rejected (`409 thread_interrupted`), because LangGraph would silently discard them.
+- **Interrupts**: the run ends `interrupted`; the checkpoint is the source of truth (`GET /threads/{id}/state`). Resume sends `command.resume` as a map `{interrupt_id: value}` (a bare value is accepted only with exactly one pending interrupt). New `input` on a thread with pending interrupts is rejected (`409 thread_interrupted`), because LangGraph would silently discard them. The request-time check is a fast fail: `execute_run` re-checks the command after the claim (not on a recovery attempt), so a run queued behind one that later paused ends `error` with `thread_interrupted` (or `invalid_request` for a stale resume map) without running a node; `graph_agent.testing.run_flow` applies the same rule and raises `ValueError`.
 - **Cancellation**: pending runs are cancelled in the row; running runs are cancelled at the next heartbeat (latency at most `heartbeat_s`). Cancellation propagates through task cancellation to tools, subagents and MCP calls; thread-bound sync tools cannot be stopped, which is why they have their own bounded pool.
 - **Idempotency** (guidance shipped in the starter README): side-effect nodes run at least once more after a crash or a resume. Derive idempotency keys from durable state written by an earlier node (not from `run_id`: a resume is a new run), use `durability="sync"` for flows with side effects, and keep `interrupt()` nodes separate from side-effect nodes.
 
@@ -315,7 +315,7 @@ Inline streamed runs execute in the API process; background runs and crons go th
 | `GET /threads/{thread_id}/state` | `values`, `next`, `interrupts`, `checkpoint_id` | 200 |
 | `DELETE /threads/{thread_id}` | Delete checkpoints and runs (refused while running); queued (pending) runs are discarded and their Procrastinate jobs exit at the claim (LOST) silently | 204 |
 
-Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`. After shutdown starts, inline runs get `503 shutting_down` (retryable).
+Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`; client metadata keys starting with `graph_agent_`, `ls_` or `langgraph_` are dropped from the LangGraph config (the platform reads them) but kept on the run row. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`. After shutdown starts, inline runs get `503 shutting_down` (retryable).
 
 ### SSE events
 
@@ -323,7 +323,7 @@ Transport: FastAPI `EventSourceResponse` (as in agintis). Event id `{run_id}:{se
 
 | `event` | `data` DTO | When |
 |---------|------------|------|
-| `metadata` | `{run_id, thread_id, flow, flow_version, attempt}` | First event |
+| `metadata` | `{run_id, thread_id, flow, flow_version, attempt}` | First event (between events the stream sends an SSE comment `: ping` every 15 s so idle proxies keep it open) |
 | `updates` | `{ns, node, update}` | `updates` mode |
 | `values` | `{ns, values}` | `values` mode |
 | `messages` | `{ns, node, id, type, content, tool_call_chunks}` | `messages` mode, LLM chunks only |
@@ -488,7 +488,7 @@ Testing a flow: build `flow_context(models={"fast": FakeChatModel([...])})`, cal
 
 | Layer | Scope | Runs in |
 |-------|-------|---------|
-| Unit | Manifest and settings parsing, transitions, DTO mapping, limit wrappers | `pytest` default |
+| Unit | Manifest and settings parsing, DTO mapping, limit wrappers, runner state handling | `pytest` default |
 | Contract | Runner with `FakeChatModel` + `InMemorySaver`, SSE sequence, interrupts | `pytest` default |
 | Integration | Postgres: migrations, claims, unique index, recovery, Procrastinate lock, prune | `pytest -m integration` + docker compose |
 | Packaging | Fresh venv per workspace member; git-subdirectory install from a tag | CI |
