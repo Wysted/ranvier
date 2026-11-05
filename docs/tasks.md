@@ -18,7 +18,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T10 | `observability/tracing.py` port + lazy `otlp.py` adapter | 3 | T04 | sa-dev-py | [T10](tasks/T10-tracing-port.md) | done |
 | T11 | `runtime/checkpointer.py` (AsyncPostgresSaver / InMemorySaver) + checkpointer setup in `migrate` | 4 | T06 | sa-dev-py | [T11](tasks/T11-checkpointer.md) | done |
 | T12 | `runtime/events.py` + `runtime/context.py` (`RunContext`, `FlowContext`) | 5 | T05 | sa-dev-py | [T12](tasks/T12-events-context.md) | done |
-| T13 | `runtime/runs.py`: state machine, conditional claims, leases, cancel flag | 5 | T06 | sa-dev-py | [T13](tasks/T13-runs-repository.md) | todo |
+| T13 | `runtime/runs.py`: state machine, conditional claims, leases, cancel flag | 5 | T06 | sa-dev-py | [T13](tasks/T13-runs-repository.md) | done |
 | T14 | `runtime/flows.py`: resolution, lazy compile cache, version checks | 5 | T05, T12, S1 | sa-dev-py | [T14](tasks/T14-flow-registry.md) | done |
 | T15 | `bootstrap.py`: Container + AsyncExitStack wiring pools, LLM, limits, tracing, checkpointer | 3 | T08, T09, T10, T11, T27, T29 | sa-dev-py | [T15](tasks/T15-bootstrap.md) | todo |
 | T16 | `runtime/runner.py`: `execute_run` (claim, astream v2 -> events, heartbeat, run timeout, cancel) | 5 | T13, T14, T15, S1 | sa-dev-py | [T16](tasks/T16-runner.md) | todo |
