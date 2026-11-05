@@ -9,8 +9,8 @@ from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from fake_models import FakeToolModel
 from graph_agent._internal.agents.skills import SkillError, SkillsMiddleware, load_skills
+from graph_agent.testing import FakeChatModel
 
 FIXTURES = Path(__file__).parent / "skills_fixtures"
 
@@ -137,17 +137,11 @@ async def test_awrap_model_call_injects_prompt() -> None:
 
 
 async def test_end_to_end_through_create_agent() -> None:
-    seen: list[str] = []
-
-    class Recording(FakeToolModel):
-        def _generate(self, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
-            seen.append(messages[0].text)
-            return super()._generate(messages, *args, **kwargs)
-
+    model = FakeChatModel(["ok"])
     agent = create_agent(
-        Recording(messages=iter([AIMessage(content="ok")])),
+        model,
         system_prompt="Be brief.",
         middleware=[await asyncio.to_thread(SkillsMiddleware, [FIXTURES])],
     )
     await agent.ainvoke({"messages": [HumanMessage("hi")]})
-    assert seen[0].startswith("Be brief.\n\n## Skills")
+    assert model.calls[0][0].text.startswith("Be brief.\n\n## Skills")
