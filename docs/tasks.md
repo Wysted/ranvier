@@ -10,12 +10,12 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T02 | Tooling: ruff (with `banned-api`), mypy strict, import-linter contracts C1-C6, pytest config, `blockbuster`, `scripts/check.sh` | 1 | T01 | sa-build-py | [T02](tasks/T02-tooling-gate.md) | done |
 | T03 | CI: clean install, `check.sh`, git-subdirectory install check | 1 | T02 | sa-build-py | [T03](tasks/T03-ci-workflow.md) | done |
 | T04 | `config/settings.py`: root `Settings` (env + `.env` + `graph-agent.toml`, prefix `GRAPH_AGENT_`) | 2 | T02 | sa-dev-py | [T04](tasks/T04-settings.md) | done |
-| T05 | `config/manifest.py`: flows, tools, crons, mcp, profiles models; lazy `module:object` import | 2 | T04 | sa-dev-py | [T05](tasks/T05-manifest.md) | todo |
-| T06 | `db/pool.py`, `db/migrate.py` (advisory lock), `migrations/0001_init.sql` (`runs` with partial unique index, `usage`) | 4 | T04 | sa-dev-py | [T06](tasks/T06-db-migrations.md) | todo |
+| T05 | `config/manifest.py`: flows, tools, crons, mcp, profiles models; lazy `module:object` import | 2 | T04 | sa-dev-py | [T05](tasks/T05-manifest.md) | done |
+| T06 | `db/pool.py`, `db/migrate.py` (advisory lock), `migrations/0001_init.sql` (`runs` with partial unique index, `usage`) | 4 | T04 | sa-dev-py | [T06](tasks/T06-db-migrations.md) | done |
 | T07 | Dev `docker-compose.yml` (Postgres) and integration-test marker | 4 | T01 | sa-build-py | [T07](tasks/T07-dev-compose.md) | done |
 | T08 | `llm.py`: profiles -> `init_chat_model`, one shared httpx client per provider | 3 | T05, S3 | sa-dev-py | [T08](tasks/T08-llm-profiles.md) | todo |
 | T09 | `limits.py`: semaphores, run admission, bounded thread/process executors, loop-lag sampler | 3 | T04, S5 | sa-dev-py | [T09](tasks/T09-limits.md) | todo |
-| T10 | `observability/tracing.py` port + lazy `otlp.py` adapter | 3 | T04 | sa-dev-py | [T10](tasks/T10-tracing-port.md) | todo |
+| T10 | `observability/tracing.py` port + lazy `otlp.py` adapter | 3 | T04 | sa-dev-py | [T10](tasks/T10-tracing-port.md) | done |
 | T11 | `runtime/checkpointer.py` (AsyncPostgresSaver / InMemorySaver) + checkpointer setup in `migrate` | 4 | T06 | sa-dev-py | [T11](tasks/T11-checkpointer.md) | todo |
 | T12 | `runtime/events.py` + `runtime/context.py` (`RunContext`, `FlowContext`) | 5 | T05 | sa-dev-py | [T12](tasks/T12-events-context.md) | todo |
 | T13 | `runtime/runs.py`: state machine, conditional claims, leases, cancel flag | 5 | T06 | sa-dev-py | [T13](tasks/T13-runs-repository.md) | todo |

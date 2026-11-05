@@ -8,7 +8,7 @@ unblocks: [T08, T12, T14, T27, T29, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T05-manifest
-status: todo
+status: done
 ---
 
 ## Goal

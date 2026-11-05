@@ -8,7 +8,7 @@ unblocks: [T11, T13, T32, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T06-db-migrations
-status: todo
+status: done
 ---
 
 ## Goal
