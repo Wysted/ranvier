@@ -543,7 +543,6 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 | OpenAI/Azure Chat Completions accept image parts inside `role=tool` messages (LangChain emits `image_url` parts there; MCP session behavior itself resolved by S2) | MCP results, profiles using OpenAI/Azure |
 | Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
-| `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |
 | Studio via `langgraph dev` can load a shim that builds factories with a dev `FlowContext` | Dev experience |
 | langgraph on 3.14: S5 passed with langgraph 1.2.19 / checkpoint-postgres 3.2.0 (classifiers still stop at 3.13; CI keeps testing 3.14 on every bump) | Runtime image |
 | Lease expiry while the owner is alive (event-loop stall) cannot double-run: the sweep only requeues if the conditional claim wins and the partial unique index holds | Never run a thread twice |

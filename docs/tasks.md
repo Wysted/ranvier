@@ -16,7 +16,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T08 | `llm.py`: profiles -> `init_chat_model`, one shared httpx client per provider | 3 | T05, S3 | sa-dev-py | [T08](tasks/T08-llm-profiles.md) | done |
 | T09 | `limits.py`: semaphores, run admission, bounded thread/process executors, loop-lag sampler | 3 | T04, S5 | sa-dev-py | [T09](tasks/T09-limits.md) | done |
 | T10 | `observability/tracing.py` port + lazy `otlp.py` adapter | 3 | T04 | sa-dev-py | [T10](tasks/T10-tracing-port.md) | done |
-| T11 | `runtime/checkpointer.py` (AsyncPostgresSaver / InMemorySaver) + checkpointer setup in `migrate` | 4 | T06 | sa-dev-py | [T11](tasks/T11-checkpointer.md) | todo |
+| T11 | `runtime/checkpointer.py` (AsyncPostgresSaver / InMemorySaver) + checkpointer setup in `migrate` | 4 | T06 | sa-dev-py | [T11](tasks/T11-checkpointer.md) | done |
 | T12 | `runtime/events.py` + `runtime/context.py` (`RunContext`, `FlowContext`) | 5 | T05 | sa-dev-py | [T12](tasks/T12-events-context.md) | done |
 | T13 | `runtime/runs.py`: state machine, conditional claims, leases, cancel flag | 5 | T06 | sa-dev-py | [T13](tasks/T13-runs-repository.md) | todo |
 | T14 | `runtime/flows.py`: resolution, lazy compile cache, version checks | 5 | T05, T12, S1 | sa-dev-py | [T14](tasks/T14-flow-registry.md) | todo |

@@ -8,7 +8,7 @@ unblocks: [T15, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T11-checkpointer
-status: todo
+status: done
 ---
 
 ## Goal
