@@ -8,7 +8,7 @@ unblocks: [T16, T17, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T14-flow-registry
-status: todo
+status: done
 ---
 
 ## Goal
