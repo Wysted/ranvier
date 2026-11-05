@@ -79,17 +79,25 @@ class FlowRegistry:
         self._checkpointer = checkpointer
         self._context_factory = context_factory
         self._cache: dict[str, CompiledFlow] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # One in-flight build per flow, shared by every waiter (they all get its exception).
+        self._building: dict[str, asyncio.Task[CompiledFlow]] = {}
 
     async def get(self, name: str) -> CompiledFlow:
         if name not in self._flows:
             raise RunError(ErrorCode.FLOW_NOT_FOUND, f"flows.{name}: unknown flow", retryable=False)
         if (hit := self._cache.get(name)) is not None:
             return hit
-        async with self._locks.setdefault(name, asyncio.Lock()):
-            if (hit := self._cache.get(name)) is None:  # built while we waited for the lock
-                hit = self._cache[name] = await self._build(name, self._flows[name])
-        return hit
+        if (task := self._building.get(name)) is None:
+            task = self._building[name] = asyncio.create_task(self._build_shared(name))
+        # shield: a cancelled waiter must not cancel the build the others wait on
+        return await asyncio.shield(task)
+
+    async def _build_shared(self, name: str) -> CompiledFlow:
+        try:
+            flow = self._cache[name] = await self._build(name, self._flows[name])
+        finally:
+            del self._building[name]  # failures are never cached: the next request retries
+        return flow
 
     async def _build(self, name: str, spec: FlowSpec) -> CompiledFlow:
         key = f"flows.{name}.target"
