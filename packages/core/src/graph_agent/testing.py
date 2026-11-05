@@ -2,13 +2,13 @@
 
 `run_flow` drives the same `stream_graph` core as the real runner over an `InMemorySaver`, so
 events and interrupts map exactly as in production. It applies no run timeout: bound tests with
-`pytest-timeout` or `asyncio.timeout`.
+`asyncio.timeout`.
 """
 
 from __future__ import annotations
 
-import asyncio
-import inspect
+import math
+import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import aclosing
@@ -25,11 +25,23 @@ from langgraph.types import Command, Interrupt
 from graph_agent._internal.agents.factory import build_agent
 from graph_agent._internal.agents.mcp import McpToolSource
 from graph_agent._internal.agents.spec import AgentSpec
-from graph_agent._internal.agents.tools import ToolRegistry
+from graph_agent._internal.agents.tools import Isolation, ToolRegistry, _has_async
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.runtime.context import FlowContext, FlowContextImpl, RunContext
-from graph_agent._internal.runtime.events import RunEvent
-from graph_agent._internal.runtime.flows import CompiledFlow
+from graph_agent._internal.runtime.events import (
+    CustomEvent,
+    EndEvent,
+    ErrorEvent,
+    InterruptEvent,
+    InterruptItem,
+    MessagesEvent,
+    MetadataEvent,
+    RunEvent,
+    UpdatesEvent,
+    UsageTotals,
+    ValuesEvent,
+)
+from graph_agent._internal.runtime.flows import CompiledFlow, to_builder
 from graph_agent._internal.runtime.offline import FakeChatModel as _OfflineFakeChatModel
 from graph_agent._internal.runtime.runner import CLIENT_STREAM_MODES, stream_graph
 
@@ -37,12 +49,31 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.graph.state import CompiledStateGraph
 
-__all__ = ["FakeChatModel", "FlowContext", "FlowResult", "flow_context", "run_flow"]
+__all__ = [
+    "CustomEvent",
+    "EndEvent",
+    "ErrorEvent",
+    "FakeChatModel",
+    "FlowContext",
+    "FlowResult",
+    "InterruptEvent",
+    "InterruptItem",
+    "MessagesEvent",
+    "MetadataEvent",
+    "RunEvent",
+    "UpdatesEvent",
+    "UsageTotals",
+    "ValuesEvent",
+    "flow_context",
+    "run_flow",
+]
 
 FLOW_NAME = "test"
 FLOW_VERSION = 1
 # Every client mode, so tests can assert on any event.
 _STREAM_MODES = sorted(CLIENT_STREAM_MODES)
+# LangGraph treats a resume dict as an id map when every key looks like this (pregel/_loop.py).
+_INTERRUPT_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class FakeChatModel(_OfflineFakeChatModel):
@@ -91,37 +122,24 @@ def flow_context(
             raise KeyError(f"no tool named {missing}; pass flow_context(tools=...)")
         return [tools[n] for n in names]
 
+    sync_only: dict[str, Isolation] = {
+        t.name: "thread" for t in tools.values() if not _has_async(t)
+    }
+
     async def agent(spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]:
-        # Names resolve against `tools`; the empty registry only wraps the tool objects.
+        # Names resolve against `tools`; the empty registry only wraps the tool objects. A sync-only
+        # tool gets isolation 'thread', the same rule a user configures under `[tools.*]`.
         resolved = [
             t for item in spec.tools for t in (lookup(item) if isinstance(item, str) else [item])
         ]
         return await build_agent(
             replace(spec, tools=resolved),
             models=model,
-            registry=ToolRegistry({}, LimitsSettings()),
+            registry=ToolRegistry({}, LimitsSettings(), object_isolation=sync_only),
             mcp=mcp,
         )
 
     return _MemoryContext(FLOW_NAME, dict(config or {}), model, lookup, agent)
-
-
-async def _to_builder(
-    target: StateGraph[Any, Any, Any, Any] | Callable[[FlowContext], Any], ctx: FlowContext
-) -> StateGraph[Any, Any, Any, Any]:
-    if not isinstance(target, StateGraph):
-        if inspect.iscoroutinefunction(target):
-            built = await target(ctx)
-        else:  # a sync factory may do I/O: keep it off the loop
-            built = await asyncio.to_thread(target, ctx)
-            if inspect.isawaitable(built):
-                built = await built
-        target = built
-    if not isinstance(target, StateGraph):
-        raise TypeError(
-            f"target must be a StateGraph or a factory returning one, got {type(target).__name__}"
-        )
-    return target
 
 
 async def _resume_command(
@@ -131,7 +149,11 @@ async def _resume_command(
     pending = [i.id for i in (await graph.aget_state(config)).interrupts]
     if not pending:
         raise ValueError("resume given but the thread has no pending interrupt")
-    if isinstance(resume, Mapping) and resume and set(resume) <= set(pending):
+    if isinstance(resume, Mapping) and all(
+        isinstance(k, str) and _INTERRUPT_ID.fullmatch(k) for k in resume
+    ):
+        if not resume or not set(resume) <= set(pending):
+            raise ValueError(f"resume map must hold only pending interrupt ids: {pending}")
         return Command(resume=dict(resume))
     if len(pending) == 1:
         return Command(resume=resume)
@@ -156,7 +178,9 @@ async def run_flow(
     ctx = ctx or flow_context()
     if not isinstance(ctx, _MemoryContext):
         raise TypeError("ctx must come from graph_agent.testing.flow_context()")
-    builder = await _to_builder(target, ctx)
+    if input is not None and resume is not None:
+        raise ValueError("pass input or resume, not both")
+    builder = await to_builder(target, ctx)
     graph = builder.compile(checkpointer=ctx.saver, name=FLOW_NAME)
     thread_id = thread_id or str(uuid.uuid4())
     run_id = str(uuid.uuid4())
@@ -167,7 +191,8 @@ async def run_flow(
     payload = input if resume is None else await _resume_command(graph, config, resume)
 
     run_ctx = RunContext(run_id, thread_id, FLOW_NAME, FLOW_VERSION, 1, None)
-    compiled = CompiledFlow(FLOW_NAME, graph, FLOW_VERSION, "sync", 0.0, None)
+    # shortcut: no run timeout, bound tests with asyncio.timeout; add one if users hang CI
+    compiled = CompiledFlow(FLOW_NAME, graph, FLOW_VERSION, "sync", math.inf, None)
     stream = stream_graph(compiled, payload, config, run_ctx, _STREAM_MODES)
     async with aclosing(stream):
         events = tuple([event async for event in stream])

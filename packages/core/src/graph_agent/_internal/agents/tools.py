@@ -168,7 +168,10 @@ class ToolRegistry:
         tools_settings: Mapping[str, ToolSpec],
         limits: LimitsSettings,
         cpu_pool: CpuPool | None = None,
+        object_isolation: Mapping[str, Isolation] | None = None,
     ) -> None:
+        # isolation for already-built tool objects, by tool name (default "async")
+        self._object_isolation = object_isolation or {}
         self._settings = tools_settings
         self._limits = limits
         self._cpu_pool = cpu_pool
@@ -211,7 +214,14 @@ class ToolRegistry:
             with self._lock:
                 cached = self._by_object.get(id(item))
                 if cached is None:
-                    cached = (item, self._wrap(f"tool object {item.name!r}", item))
+                    cached = (
+                        item,
+                        self._wrap(
+                            f"tool object {item.name!r}",
+                            item,
+                            isolation=self._object_isolation.get(item.name, "async"),
+                        ),
+                    )
                     self._by_object[id(item)] = cached
             out.append(cached[1])
         return out

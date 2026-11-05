@@ -1,16 +1,16 @@
 """The public test kit, exercised through the real runner mapping."""
 
+from collections.abc import Sequence
 from typing import Any, TypedDict
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from graph_agent import AgentSpec, FlowContext
-from graph_agent._internal.runtime.events import EndEvent, InterruptEvent
-from graph_agent.testing import FakeChatModel, flow_context, run_flow
+from graph_agent.testing import EndEvent, FakeChatModel, InterruptEvent, flow_context, run_flow
 
 
 class _State(TypedDict, total=False):
@@ -122,3 +122,67 @@ def test_missing_model_and_tool_fail_loudly() -> None:
         ctx.model("x")
     with pytest.raises(KeyError, match="no tool named"):
         ctx.tools("y")
+
+
+async def test_sync_only_tool_runs_in_a_thread() -> None:
+    @tool
+    def add(a: int, b: int) -> int:
+        """Add two numbers."""
+        return a + b
+
+    call = AIMessage(content="", tool_calls=[{"name": "add", "args": {"a": 2, "b": 3}, "id": "c1"}])
+    ctx = flow_context(models={"fast": FakeChatModel([call, "done"])}, tools={"add": add})
+
+    async def factory(c: FlowContext) -> StateGraph[Any, Any, Any, Any]:
+        b = StateGraph(MessagesState)
+        b.add_node("calc", await c.agent(AgentSpec(name="calc", profile="fast", tools=["add"])))
+        b.add_edge(START, "calc")
+        return b
+
+    result = await run_flow(factory, {"messages": [HumanMessage("2+3?")]}, ctx=ctx)
+    assert [m.content for m in result.values["messages"] if m.type == "tool"] == ["5"]
+
+
+async def test_agent_with_fake_mcp_source() -> None:
+    @tool
+    async def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    class FakeMcp:
+        async def tools(self, server: str) -> Sequence[BaseTool]:
+            assert server == "x"
+            return [ping]
+
+    call = AIMessage(content="", tool_calls=[{"name": "ping", "args": {}, "id": "c1"}])
+    ctx = flow_context(models={"fast": FakeChatModel([call, "done"])}, mcp=FakeMcp())
+
+    async def factory(c: FlowContext) -> StateGraph[Any, Any, Any, Any]:
+        spec = AgentSpec(name="a", profile="fast", mcp_servers=["x"])
+        b = StateGraph(MessagesState)
+        b.add_node("a", await c.agent(spec))
+        b.add_edge(START, "a")
+        return b
+
+    result = await run_flow(factory, {"messages": [HumanMessage("hi")]}, ctx=ctx)
+    assert [m.content for m in result.values["messages"] if m.type == "tool"] == ["pong"]
+
+
+async def test_resume_map_rules_and_input_xor_resume() -> None:
+    ctx = flow_context()
+    await run_flow(_asking(), {}, ctx=ctx, thread_id="t4")
+    with pytest.raises(ValueError, match="pending interrupt ids"):
+        await run_flow(_asking(), ctx=ctx, thread_id="t4", resume={})
+    with pytest.raises(ValueError, match="pending interrupt ids"):
+        await run_flow(_asking(), ctx=ctx, thread_id="t4", resume={"a" * 32: "x"})
+    with pytest.raises(ValueError, match="input or resume"):
+        await run_flow(_asking(), {}, ctx=ctx, thread_id="t4", resume="x")
+    # a dict that is not an id map is a direct value for the single pending interrupt
+    done = await run_flow(_asking(), ctx=ctx, thread_id="t4", resume={"first": "ada"})
+    assert done.values == {"answer": {"first": "ada"}}
+
+
+async def test_compiled_graph_target_gets_a_clear_error() -> None:
+    compiled = _plain().compile()
+    with pytest.raises(TypeError, match="compiled graph; export the uncompiled StateGraph"):
+        await run_flow(compiled, {"n": 1})  # type: ignore[arg-type]
