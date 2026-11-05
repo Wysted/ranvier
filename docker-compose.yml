@@ -1,0 +1,26 @@
+# Dev Postgres for local work and integration tests (`docker compose up -d`).
+# Postgres 18: current stable major, supported by langgraph-checkpoint-postgres (psycopg 3)
+# and Procrastinate. Dev-only credentials; never reuse them outside this file.
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: graph_agent
+      POSTGRES_PASSWORD: graph_agent
+      POSTGRES_DB: graph_agent
+    ports:
+      # Non-default host port so it does not clash with a local Postgres on 5432.
+      - "127.0.0.1:54329:5432"
+    volumes:
+      # Postgres 18 images keep PGDATA in a versioned subdirectory of this path.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U graph_agent -d graph_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  pgdata:
