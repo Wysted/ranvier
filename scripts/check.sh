@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Local quality gate: lint, format, types, import contracts, unit tests.
-# Integration tests need Postgres (docker compose up -d): uv run pytest -m integration
+# Integration tests need Postgres (docker compose up -d), run from packages/core:
+#   cd packages/core && uv run pytest -m integration
 # Tool config lives in packages/core/pyproject.toml, so tools run from there (docs/ stays out of ruff).
 set -euo pipefail
 

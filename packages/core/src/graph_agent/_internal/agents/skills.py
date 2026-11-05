@@ -53,7 +53,7 @@ def _parse_skill(path: Path) -> Skill:
         # never str(exc): it quotes the offending line, which may hold a secret
         mark = exc.problem_mark
         where = f" (frontmatter line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-        raise SkillError(f"{path}: invalid YAML frontmatter: {exc.problem}{where}") from None
+        raise SkillError(f"{path}: invalid YAML frontmatter: {exc.problem or "syntax error"}{where}") from None
     except yaml.YAMLError:
         raise SkillError(f"{path}: invalid YAML frontmatter") from None
     if not isinstance(meta, dict):
