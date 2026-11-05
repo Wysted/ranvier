@@ -8,7 +8,7 @@ unblocks: [T03, T04, T28, T35]
 owner: sa-build-py
 reviewer: sa-review-py
 branch: task/T02-tooling-gate
-status: todo
+status: done
 ---
 
 ## Goal

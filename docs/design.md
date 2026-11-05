@@ -113,6 +113,7 @@ graph_agent/
 | C3 | Web stays at the edge | `fastapi`, `starlette` only in `api`; `uvicorn` only in `api` and `cli` |
 | C4 | Queue stays at the edge | `procrastinate` only in `queue` and `worker` |
 | C5 | LangGraph surface | `langgraph` only in `runtime`, `agents`, facade, `testing`; `langchain`/`langchain_core` additionally in `llm`, `usage` |
+| C5c | Provider integrations in `llm` only | `langchain_openai`, `langchain_anthropic`, `langchain_ollama` only in `llm` (added after the T02 review) |
 | C6 | Tracing behind its port | `opentelemetry`, `openinference` only in `observability.otlp`; only `observability.tracing` imports `otlp` (lazily) |
 
 Ruff `banned-api` (import-linter cannot target external subpackages): `mcp` and `httpx2` outside `agents/mcp.py` (tests excepted); `langchain.mcp`, `fastmcp`, `langchain_mcp_adapters` (archived), `langgraph.prebuilt.create_react_agent`, `langgraph_supervisor`, `asyncpg`, `fastapi.responses.ORJSONResponse` (deprecated) everywhere.
