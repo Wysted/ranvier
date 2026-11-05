@@ -11,28 +11,12 @@ from typing import TYPE_CHECKING, Any, Literal
 from langgraph.graph.state import CompiledStateGraph, StateGraph
 
 from graph_agent._internal.config.manifest import FlowSpec, import_target
+from graph_agent._internal.runtime.runs import ErrorCode, RunError
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
 
     from graph_agent._internal.runtime.context import FlowContext
-
-# shortcut: string codes mirroring design §5/§6 until T13's ErrorCode/RunError (runtime/runs.py) is
-# on main (FLOW_NOT_FOUND, FLOW_BUILD_FAILED, FLOW_VERSION_MISMATCH); then delete RunError below,
-# import both from runs.py and use ErrorCode members.
-FLOW_NOT_FOUND = "flow_not_found"
-FLOW_BUILD_FAILED = "flow_build_failed"
-FLOW_VERSION_MISMATCH = "flow_version_mismatch"
-
-
-class RunError(Exception):
-    """`{code, message, retryable}`; same shape as T13's `RunError`."""
-
-    def __init__(self, code: str, message: str, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +33,7 @@ def check_version(compiled: CompiledFlow, recorded_version: int) -> None:
     """Reject a thread recorded with another flow version (persisted contract)."""
     if compiled.version != recorded_version:
         raise RunError(
-            FLOW_VERSION_MISMATCH,
+            ErrorCode.FLOW_VERSION_MISMATCH,
             f"flows.{compiled.name}.version: flow is version {compiled.version}, "
             f"thread was recorded with version {recorded_version}",
         )
@@ -70,7 +54,7 @@ class FlowRegistry:
 
     async def get(self, name: str) -> CompiledFlow:
         if name not in self._flows:
-            raise RunError(FLOW_NOT_FOUND, f"flows.{name}: unknown flow", retryable=False)
+            raise RunError(ErrorCode.FLOW_NOT_FOUND, f"flows.{name}: unknown flow", retryable=False)
         if (hit := self._cache.get(name)) is not None:
             return hit
         async with self._locks.setdefault(name, asyncio.Lock()):
@@ -116,4 +100,4 @@ class FlowRegistry:
 
 def _build_failed(message: str) -> RunError:
     # Never cached and a redeploy fixes it (design §4): always retryable.
-    return RunError(FLOW_BUILD_FAILED, message, retryable=True)
+    return RunError(ErrorCode.FLOW_BUILD_FAILED, message, retryable=True)

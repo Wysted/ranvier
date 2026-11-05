@@ -332,7 +332,7 @@ class _Source:
             await srv.close()
 
 
-def _resolve_headers(name: str, spec: McpServerSpec) -> dict[str, str]:
+def resolve_headers(name: str, spec: McpServerSpec) -> dict[str, str]:
     """Header values from the environment; never echoes a value, only the variable name."""
     headers: dict[str, str] = {}
     for header, env_name in spec.headers_env.items():
@@ -357,7 +357,7 @@ async def open_mcp_sources(
     """
     source = _Source(
         {
-            name: _Server(name, spec, _resolve_headers(name, spec), transport)
+            name: _Server(name, spec, resolve_headers(name, spec), transport)
             for name, spec in servers.items()
         }
     )
