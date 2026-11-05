@@ -221,9 +221,8 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "none"
 
-# shortcut: wildcards because exact names crash lint-imports while observability/otlp.py and tracing.py do not exist; replace with exact module names when they land.
 [[tool.importlinter.contracts]]
 name = "C6b only observability.tracing imports observability.otlp"
 type = "protected"
-protected_modules = ["graph_agent._internal.*.otlp"]
-allowed_importers = ["graph_agent._internal.*.tracing"]
+protected_modules = ["graph_agent._internal.observability.otlp"]
+allowed_importers = ["graph_agent._internal.observability.tracing"]
