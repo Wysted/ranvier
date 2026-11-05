@@ -1,0 +1,37 @@
+name: CI
+
+# Generic workflow: the logic lives in scripts/check.sh, so it ports to any CI host.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Never re-resolve in CI: every `uv sync`/`uv run` must match uv.lock.
+  UV_FROZEN: "1"
+
+jobs:
+  gate:
+    name: gate (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+      - run: uv sync
+      # ruff, format, mypy, import-linter, pytest. blockbuster (tests/conftest.py) fails any
+      # async test that blocks the event loop.
+      - run: scripts/check.sh

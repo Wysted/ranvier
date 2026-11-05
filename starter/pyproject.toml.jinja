@@ -1,0 +1,66 @@
+[project]
+name = "{{ project_name }}"
+version = "0.0.0"
+description = "{{ project_name }}: flows on graph-agent"
+requires-python = ">=3.13"
+# The extras pick the LLM provider packages and tracing; drop what you do not use
+# (available: openai, anthropic, ollama, otel).
+dependencies = ["graph-agent[ollama]"]
+
+[tool.uv.sources]
+# One tag versions the package and this starter: `copier update` moves the pin.
+graph-agent = { git = "{{ graph_agent_repo }}", tag = "{{ graph_agent_tag }}", subdirectory = "packages/core" }
+
+[dependency-groups]
+dev = [
+    "blockbuster>=1.5",
+    "import-linter>=2.15",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/{{ package_name }}"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Also covers tests/, which import-linter does not (it only sees the root packages).
+"graph_agent._internal".msg = "Import only the public facade: graph_agent and graph_agent.testing."
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+mypy_path = ["src"]
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Warnings are errors, except langsmith's import-time asyncio deprecation on Python 3.14.
+filterwarnings = ["error", "ignore::DeprecationWarning:langsmith.*"]
+
+[tool.importlinter]
+root_packages = ["{{ package_name }}", "graph_agent"]
+
+[[tool.importlinter.contracts]]
+name = "Product code uses only the public graph_agent facade"
+type = "forbidden"
+source_modules = ["{{ package_name }}"]
+forbidden_modules = ["graph_agent._internal"]
+# The facade itself imports _internal: only a direct import from product code is a violation.
+allow_indirect_imports = true

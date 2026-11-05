@@ -1,0 +1,27 @@
+# Manifest and runtime config. Secrets never go here: only the NAMES of environment variables.
+
+[api]
+# The API refuses auth = "none" on a non-loopback host (the container binds 0.0.0.0).
+auth = "api_keys"
+
+# A key WITHOUT tenant_id is an admin key: it sees the runs and threads of every tenant.
+# Give per-tenant keys a tenant_id, or use an auth hook (`auth = "module:callable"`).
+[api.keys.admin]
+key_env = "API_KEY_ADMIN"
+
+[limits]
+max_active_runs = 8
+tool_timeout_s = 30
+
+[flows.example]
+target = "{{ package_name }}.flows.example:example"
+version = 1
+description = "One agent answering from the conversation"
+# "sync" is the default: each superstep is checkpointed before the next starts.
+durability = "sync"
+
+# Bootstrap warms up every profile, so a profile with `api_key_env` makes every flow need that
+# key. Add hosted-provider profiles only when all flows can run with them.
+[llm.profiles.fast]
+provider = "ollama"
+model = "qwen3:4b"

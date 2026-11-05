@@ -1,0 +1,17 @@
+from graph_agent.testing import FakeChatModel, flow_context, run_flow
+from langchain_core.messages import HumanMessage
+
+from {{ package_name }}.flows.example import SYSTEM_PROMPT, example
+
+
+async def test_example_answers() -> None:
+    model = FakeChatModel(["Hello! How can I help?"])
+    ctx = flow_context(models={"fast": model})
+    result = await run_flow(example, {"messages": [HumanMessage("hi")]}, ctx=ctx)
+
+    assert [(m.type, m.content) for m in model.calls[0]] == [
+        ("system", SYSTEM_PROMPT),
+        ("human", "hi"),
+    ]
+    assert result.values["messages"][-1].content == "Hello! How can I help?"
+    assert not result.interrupts

@@ -1,0 +1,61 @@
+# `docker compose up -d db` for local development (run the app with `uv run graph-agent serve`),
+# or `docker compose up -d --build` to run the whole stack. Dev-only credentials: never reuse them.
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    # Inside the compose network the database is `db:5432`; the container binds all interfaces
+    # (api.auth must then be api_keys or a hook, see graph-agent.toml).
+    GRAPH_AGENT_DATABASE__URL: postgresql://graph_agent:graph_agent@db:5432/graph_agent
+    GRAPH_AGENT_API__HOST: 0.0.0.0
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: graph_agent
+      POSTGRES_PASSWORD: graph_agent
+      POSTGRES_DB: graph_agent
+    ports:
+      # Non-default host port below 49152: no clash with a local 5432 nor with the ranges
+      # Windows/Hyper-V reserves dynamically (WSL).
+      - "127.0.0.1:25432:5432"
+    volumes:
+      # Postgres 18 images keep PGDATA in a versioned subdirectory of this path.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    restart: "no"
+
+  api:
+    <<: *app
+    command: ["serve"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
