@@ -1,9 +1,13 @@
 """Platform-owned global limits: run admission, thread executor, CPU process slots, loop lag.
 
 Everything is created once in the composition root; nothing here is a module-level singleton.
+
+Entrypoints that use `CpuPool` need the `if __name__ == "__main__"` guard: the forkserver
+re-imports the parent's `__main__` in its children.
 """
 
 import asyncio
+import contextlib
 import logging
 import multiprocessing
 import time
@@ -103,33 +107,63 @@ class CpuPool:
         for slot in range(workers):
             self._free.put_nowait(slot)
         self.recycles = 0
+        self._closed = False
 
     @staticmethod
     def _new() -> ProcessPoolExecutor:
         return ProcessPoolExecutor(max_workers=1, mp_context=_FORKSERVER)
 
+    async def start(self) -> None:
+        """Spawn all workers off the loop; call before admitting runs (no concurrent recycle)."""
+        await asyncio.to_thread(self._warm)
+
+    def _warm(self) -> None:
+        for pool in self._pools:
+            pool.submit(int).result()
+
+    async def __aenter__(self) -> Self:
+        await self.start()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
     async def run(self, fn: Callable[..., Any], *args: Any, timeout_s: float) -> Any:
         """Raises TimeoutError (also while waiting for a slot) or BrokenProcessPool."""
+        if self._closed:
+            raise RuntimeError("CpuPool is closed")
         async with asyncio.timeout(timeout_s):
             slot = await self._free.get()
             try:
-                fut = None
                 try:
                     fut = self._pools[slot].submit(fn, *args)  # raises if the idle worker died
+                except BrokenProcessPool:
+                    self._recycle(slot)
+                    raise
+                try:
                     return await asyncio.wrap_future(fut)
                 except BrokenProcessPool:
                     self._recycle(slot)
                     raise
                 except asyncio.CancelledError:
                     # Running work only stops with a kill; a not-yet-started one cancels cleanly.
-                    if fut is not None and not fut.cancel() and not fut.done():
+                    if not fut.cancel() and not fut.done():
                         self._recycle(slot)
                     raise
             finally:
                 self._free.put_nowait(slot)
 
     def _recycle(self, slot: int) -> None:
-        old, self._pools[slot] = self._pools[slot], self._new()
+        # shortcut: recycle spawns on the loop (~2 ms per timeout/crash),
+        # move to a thread if loop lag shows it
+        old = self._pools[slot]
+        if not self._closed:
+            self._pools[slot] = self._new()
         self.recycles += 1
         _kill_pool(old)
 
@@ -138,6 +172,8 @@ class CpuPool:
         return self._free.qsize()
 
     def close(self) -> None:
+        """Terminal: kills all workers; later `run` calls raise and recycles stop respawning."""
+        self._closed = True
         for pool in self._pools:
             _kill_pool(pool)
 
@@ -160,7 +196,8 @@ class LoopLagSampler:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def __aenter__(self) -> Self:
         await self.start()

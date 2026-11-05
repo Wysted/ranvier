@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -25,13 +26,14 @@ TIMEOUT_S = 0.5
 def _blockbuster(request: pytest.FixtureRequest) -> Iterator[None]:
     """Overrides conftest: starting a forkserver worker blocks the loop for a moment by design.
 
-    Only the executor's own spawn code path is exempted, and only for the CpuPool tests.
+    Workers are pre-spawned by `start()` off the loop; only the recycle/close paths (which spawn or
+    kill on the loop, see the shortcut in `_recycle`) are exempted, and only for the CpuPool tests.
     """
     with blockbuster_ctx() as bb:
         if request.node.name.startswith("test_cpu_pool"):
             for func in bb.functions.values():
                 func.can_block_in("concurrent/futures/process.py", {"submit", "__init__"})
-                func.can_block_in("_internal/limits.py", {"_new", "close", "_recycle"})
+                func.can_block_in("_internal/limits.py", {"close", "_recycle"})
         yield
 
 
@@ -100,6 +102,21 @@ async def test_admit_waiter_gets_slot_when_freed() -> None:
     assert entered.is_set()
 
 
+async def test_admit_cancelled_waiter_leaks_nothing() -> None:
+    limits = _limits(wait_s=5)
+    async with limits.admit():
+        waiter = asyncio.create_task(limits.admit().__aenter__())
+        await asyncio.sleep(0.05)
+        assert limits.waiters == 1
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        assert limits.waiters == 0
+        assert limits.active_runs == 1
+    assert limits.active_runs == 0
+    async with limits.admit():  # the holder's permit is the only one and it came back
+        pass
+
+
 async def test_admit_releases_on_cancellation() -> None:
     limits = _limits(wait_s=5)
     holding = asyncio.Event()
@@ -123,7 +140,8 @@ async def test_install_default_executor_is_bounded() -> None:
     executor = install_default_executor(loop, 3)
     assert isinstance(executor, ThreadPoolExecutor)
     assert executor._max_workers == 3
-    assert await asyncio.to_thread(os.getpid) == os.getpid()  # runs on the installed executor
+    name = await asyncio.to_thread(lambda: threading.current_thread().name)
+    assert name.startswith("ga-sync")  # to_thread really runs on the installed executor
 
 
 async def test_lag_sampler_sees_blocked_loop(caplog: pytest.LogCaptureFixture) -> None:
@@ -142,6 +160,7 @@ async def test_lag_sampler_sees_blocked_loop(caplog: pytest.LogCaptureFixture) -
 
 async def test_cpu_pool_runs_and_reuses_slots() -> None:
     pool = CpuPool(1)
+    await pool.start()
     try:
         first = await pool.run(os.getpid, timeout_s=10)
         second = await pool.run(os.getpid, timeout_s=10)
@@ -154,6 +173,7 @@ async def test_cpu_pool_runs_and_reuses_slots() -> None:
 
 async def test_cpu_pool_timeout_kills_worker_and_spares_other_slot() -> None:
     pool = CpuPool(2)
+    await pool.start()
     try:
         healthy = asyncio.create_task(pool.run(exec, _sleep(1.0), timeout_s=10))
         await asyncio.sleep(0.2)
@@ -174,6 +194,7 @@ async def test_cpu_pool_timeout_kills_worker_and_spares_other_slot() -> None:
 
 async def test_cpu_pool_caller_cancellation_kills_worker() -> None:
     pool = CpuPool(1)
+    await pool.start()
     try:
         task = asyncio.create_task(pool.run(exec, *_STUCK, timeout_s=30))
         await asyncio.sleep(0.5)
@@ -189,6 +210,7 @@ async def test_cpu_pool_caller_cancellation_kills_worker() -> None:
 
 async def test_cpu_pool_queued_timeout_does_not_recycle() -> None:
     pool = CpuPool(1)
+    await pool.start()
     try:
         busy = asyncio.create_task(pool.run(exec, _sleep(1.0), timeout_s=10))
         await asyncio.sleep(0.2)
@@ -202,6 +224,7 @@ async def test_cpu_pool_queued_timeout_does_not_recycle() -> None:
 
 async def test_cpu_pool_worker_crash_recycles_slot() -> None:
     pool = CpuPool(1)
+    await pool.start()
     try:
         with pytest.raises(BrokenProcessPool):
             await pool.run(exec, *_SELFKILL, timeout_s=10)
@@ -209,3 +232,26 @@ async def test_cpu_pool_worker_crash_recycles_slot() -> None:
         assert isinstance(await pool.run(os.getpid, timeout_s=10), int)
     finally:
         pool.close()
+
+
+async def test_cpu_pool_close_is_terminal() -> None:
+    pool = CpuPool(1)
+    await pool.start()
+    pool.close()
+    with pytest.raises(RuntimeError):
+        await pool.run(os.getpid, timeout_s=10)
+    pool._recycle(0)  # a late recycle must not respawn a worker
+    assert pool._pools[0]._processes in (None, {})
+    assert pool.recycles == 1
+
+
+async def test_lag_sampler_stop_surfaces_sampler_error() -> None:
+    sampler = LoopLagSampler(warn_ms=50, interval_s=0.01)
+
+    async def boom() -> None:
+        raise ValueError("sampler died")
+
+    sampler._task = asyncio.create_task(boom())
+    await asyncio.sleep(0)
+    with pytest.raises(ValueError, match="sampler died"):
+        await sampler.stop()
