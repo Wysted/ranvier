@@ -413,9 +413,9 @@ Money is never stored: `graph-agent usage` prices rows at read time with `genai-
 | One root `Settings` | Nested pydantic models per group (`database`, `api`, `limits`, `llm`, `mcp`, `observability`, `runs`, `threads`), plus the manifest (`flows`, `tools`) |
 | Precedence | init args > environment > `.env` > `graph-agent.toml` > defaults |
 | Environment | Prefix `GRAPH_AGENT_`, nested delimiter `__` (`GRAPH_AGENT_DATABASE__URL`) |
-| Files | One `.env` (path `GRAPH_AGENT_ENV_FILE`), one `graph-agent.toml` (path `GRAPH_AGENT_CONFIG`) |
+| Files | One `.env` (path `GRAPH_AGENT_ENV_FILE`), one `graph-agent.toml` (path `GRAPH_AGENT_CONFIG`); both bootstrap variables are read from the process environment only, never from the `.env` itself; an explicit `_env_file=None` always wins |
 | Secrets | Env only; the TOML holds env var names (`api_key_env`, `headers_env`) |
-| Tests | `Settings(_env_file=None, _toml_file=...)` with explicit values; no global cache |
+| Tests | `Settings(_env_file=None)` with explicit values and `GRAPH_AGENT_CONFIG` pointing at a temp TOML (pydantic-settings has no `_toml_file` kwarg); fixtures clear every `GRAPH_AGENT_*` variable; no global cache |
 
 **Persistence:**
 
