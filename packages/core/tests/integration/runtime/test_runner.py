@@ -1,5 +1,4 @@
 import asyncio
-import math
 import sys
 import types
 import uuid
@@ -12,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 
+from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
@@ -28,6 +28,8 @@ FLOW_VERSION = 1
 SETTINGS = Settings(_env_file=None, runs=RunsSettings(heartbeat_s=0.05, lease_s=1.0))
 POLL_S = 0.01
 WAIT_S = 5.0
+
+GRACE_S = 10.0
 
 
 class State(TypedDict, total=False):
@@ -68,11 +70,6 @@ async def pool(clean_database: str) -> AsyncIterator[AsyncConnectionPool]:
 
 
 @dataclass
-class Budget:
-    deadline: float = math.inf
-
-
-@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -81,7 +78,7 @@ class Resources:
     observers: list[RunObserver] = field(default_factory=list)
     queue: RunQueue | None = None
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
+    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
     observability: Observability = field(
         default_factory=lambda: Observability(metrics=LoggingMetrics())
     )

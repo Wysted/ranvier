@@ -10,13 +10,14 @@ import asyncio
 import contextlib
 import logging
 import multiprocessing
+import signal
 import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import asynccontextmanager
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Final, Self
 
 from graph_agent._internal.config.settings import LimitsSettings
 
@@ -24,10 +25,22 @@ _log = logging.getLogger(__name__)
 
 LAG_INTERVAL_S = 1.0
 _MS_PER_S = 1000.0
+# Left of `limits.shutdown_grace_s` for the hand-over of runs the server cancels at its own
+# timeout (release + defer, 2 statements) and for flushing telemetry.
+HANDOVER_MARGIN_S: Final = 5.0
+
+
+def graceful_wait_s(grace_s: float) -> float:
+    """How long uvicorn / the Procrastinate worker wait for runs before cancelling them."""
+    return max(grace_s - HANDOVER_MARGIN_S, 0.0)
 
 
 class TooManyRuns(Exception):
     """No run slot became free within `limits.admission_wait_s` (HTTP 429 `too_many_runs`)."""
+
+
+class ShuttingDown(Exception):
+    """Admission is closed: the process is shutting down (HTTP 503 `shutting_down`)."""
 
 
 class Limits:
@@ -39,9 +52,16 @@ class Limits:
         self._sem = asyncio.Semaphore(self._max)
         self._active = 0
         self._waiters = 0
+        self._stopped = False
+
+    def stop_admission(self) -> None:
+        """Refuse every later `admit` (and the ones still waiting for a slot). Terminal."""
+        self._stopped = True
 
     @asynccontextmanager
     async def admit(self) -> AsyncIterator[None]:
+        if self._stopped:
+            raise ShuttingDown("shutting down")
         self._waiters += 1
         try:
             async with asyncio.timeout(self._wait_s):
@@ -50,6 +70,9 @@ class Limits:
             raise TooManyRuns(f"{self._max} runs active, none freed in {self._wait_s}s") from None
         finally:
             self._waiters -= 1
+        if self._stopped:  # woke up while the shutdown began
+            self._sem.release()
+            raise ShuttingDown("shutting down")
         self._active += 1
         try:
             yield
@@ -76,6 +99,12 @@ def install_default_executor(
 
 
 _FORKSERVER = multiprocessing.get_context("forkserver")  # 3.13 defaults to fork
+
+
+def _ignore_sigint() -> None:
+    """Pool worker initializer: Ctrl+C reaches the whole process group, but only the parent
+    decides when workers die (it kills them), so they must not print a KeyboardInterrupt."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def _kill_pool(pool: ProcessPoolExecutor) -> None:
@@ -111,7 +140,9 @@ class CpuPool:
 
     @staticmethod
     def _new() -> ProcessPoolExecutor:
-        return ProcessPoolExecutor(max_workers=1, mp_context=_FORKSERVER)
+        return ProcessPoolExecutor(
+            max_workers=1, mp_context=_FORKSERVER, initializer=_ignore_sigint
+        )
 
     async def start(self) -> None:
         """Spawn all workers off the loop; call before admitting runs (no concurrent recycle)."""

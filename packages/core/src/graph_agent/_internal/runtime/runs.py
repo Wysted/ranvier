@@ -40,6 +40,7 @@ class ErrorCode(StrEnum):
     THREAD_BUSY = "thread_busy"
     THREAD_INTERRUPTED = "thread_interrupted"
     TOO_MANY_RUNS = "too_many_runs"
+    SHUTTING_DOWN = "shutting_down"  # admission closed by the shutdown
     ORPHAN_RETRIES_EXHAUSTED = "orphan_retries_exhausted"
     INTERNAL_ERROR = "internal_error"
     FLOW_NOT_FOUND = "flow_not_found"

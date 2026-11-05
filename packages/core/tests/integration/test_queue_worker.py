@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
+from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
@@ -34,6 +35,8 @@ NODE_S = 0.4
 POLL_S = 0.02
 WAIT_S = 10.0
 timeline: list[str] = []
+
+GRACE_S = 10.0
 
 
 class State(TypedDict, total=False):
@@ -58,11 +61,6 @@ def user_module() -> Iterator[None]:
 
 
 @dataclass
-class Budget:
-    deadline: float = float("inf")
-
-
-@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -71,7 +69,7 @@ class Resources:
     queue: RunQueue | None
     observers: list[RunObserver] = field(default_factory=list)
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
+    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
     observability: Observability = field(
         default_factory=lambda: Observability(metrics=LoggingMetrics())
     )

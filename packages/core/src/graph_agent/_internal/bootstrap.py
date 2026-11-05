@@ -39,7 +39,7 @@ from graph_agent._internal.runtime.checkpointer import (
 from graph_agent._internal.runtime.context import FlowContextImpl
 from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
+from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue, settle_runs, start_drain
 from graph_agent._internal.runtime.runs import RunsRepository
 from graph_agent._internal.usage import UsageObserver, UsageRepository
 
@@ -58,7 +58,9 @@ class ShutdownBudget:
         self.deadline = math.inf  # until close starts
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.deadline = loop.time() + self._grace_s
+        """Idempotent: the signal handler starts the clock, the container close must not move it."""
+        if math.isinf(self.deadline):
+            self.deadline = loop.time() + self._grace_s
 
 
 @dataclass(slots=True)
@@ -80,8 +82,17 @@ class Container:
     shutdown_budget: ShutdownBudget
     flows: FlowRegistry
     observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)  # T26 drains these
+    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
     queue: RunQueue | None = None  # T24 sets it; None: inline-only process
+
+    def begin_shutdown(self) -> None:
+        """Idempotent, sync, loop thread: start the clock, refuse new inline runs, drain the rest.
+
+        The entrypoint calls it on SIGTERM/SIGINT, before it waits for connections or jobs; the
+        close of `open_container` then waits (bounded) for the runs and closes the pools.
+        """
+        self.limits.stop_admission()
+        start_drain(self.active_runs, self.shutdown_budget)
 
 
 @asynccontextmanager
@@ -96,6 +107,7 @@ async def open_container(
     async with AsyncExitStack() as stack:
         loop = asyncio.get_running_loop()
         # First in, last out: later teardown steps (observability flush) still use to_thread.
+        _warn_short_grace(settings)
         executor = install_default_executor(loop, settings.limits.sync_threads)
         stack.callback(_restore_default_executor, loop, executor)
 
@@ -178,7 +190,9 @@ async def open_container(
         publisher = asyncio.create_task(_publish_gauges(obs, gauges), name="gauge-publisher")
         publisher.add_done_callback(_log_publisher_death)
         stack.push_async_callback(_cancel, publisher)
-        stack.callback(budget.start, loop)  # registered last: runs first, starts the shared clock
+        # Registered last, so it runs first: start the shared clock (unless the entrypoint did),
+        # drain the runs in flight and await them before any pool closes.
+        stack.push_async_callback(_settle_runs, active_runs, budget)
 
         yield Container(
             settings=settings,
@@ -202,6 +216,25 @@ async def open_container(
         )
 
 
+def _warn_short_grace(settings: Settings) -> None:
+    """A drain waits for the superstep in flight: the grace must outlast the longest timeout."""
+    tool_default = settings.limits.tool_timeout_s
+    timeouts = [
+        *((f"flow {name}", f.timeout_s) for name, f in settings.flows.items()),
+        *((f"tool {name}", t.timeout_s or tool_default) for name, t in settings.tools.items()),
+        *((f"mcp server {name}", m.timeout_s) for name, m in settings.mcp.servers.items()),
+        *((f"llm profile {name}", p.timeout_s) for name, p in settings.llm.profiles.items()),
+    ]
+    grace = settings.limits.shutdown_grace_s
+    if timeouts and grace < (longest := max(timeouts, key=lambda item: item[1]))[1]:
+        logger.warning(
+            "limits.shutdown_grace_s (%gs) is shorter than the timeout of %s (%gs): a shutdown "
+            "can cut that run mid-node and leave it to the lease-expiry sweep",
+            grace,
+            *longest,
+        )
+
+
 def _prime_models(llm: LlmRegistry, profiles: list[str]) -> None:
     for name in profiles:
         llm.model(name)
@@ -217,6 +250,11 @@ def _restore_default_executor(
     # uvloop exposes no public default executor to put back: give the loop a fresh stock one.
     loop.set_default_executor(ThreadPoolExecutor(thread_name_prefix="asyncio"))
     executor.shutdown(wait=False)
+
+
+async def _settle_runs(active: ActiveRuns, budget: ShutdownBudget) -> None:
+    start_drain(active, budget)  # idempotent: the entrypoint may have begun already
+    await settle_runs(active, budget)
 
 
 async def _shutdown_observability(obs: Observability, budget: ShutdownBudget) -> None:

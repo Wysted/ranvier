@@ -2,9 +2,10 @@ import argparse
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotations only: the heavy imports are lazy inside the handlers
+    from collections.abc import Coroutine
     from uuid import UUID
 
     from graph_agent._internal.config.settings import Settings
@@ -39,6 +40,7 @@ def _load_settings() -> "Settings | None":
     return None
 
 
+logger = logging.getLogger(__name__)
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -412,20 +414,13 @@ _COMMANDS.append(_add_run)
 
 
 def _serve(args: argparse.Namespace) -> int:
-    import uvicorn
+    from graph_agent._internal.api.app import serve
 
     _configure_logging()
     settings = _load_settings()  # validates up front with readable errors
     if settings is None:
         return 1
-    # cli sits above api (C1) but names the factory as a string: uvicorn imports it, which loads
-    # the same Settings() again inside the server process.
-    uvicorn.run(
-        "graph_agent._internal.api.app:app_from_env",
-        factory=True,
-        host=settings.api.host,
-        port=settings.api.port,
-    )
+    serve(settings)
     return 0
 
 
@@ -468,7 +463,42 @@ async def _serve_jobs(settings: "Settings") -> None:
     from graph_agent._internal.worker import WORKER_EXTRA_CONNECTIONS, run_worker
 
     async with open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container:
-        await run_worker(container)
+        await _until_signalled(run_worker(container))
+
+
+async def _until_signalled(main: "Coroutine[Any, Any, None]") -> None:
+    """Run `main`; the first SIGTERM/SIGINT cancels it (its cancel path is the graceful stop).
+
+    Returns normally after a signal. Ours instead of the interpreter's, so Ctrl+C is not a
+    KeyboardInterrupt in the middle of the shutdown; a second signal is ignored (SIGKILL forces).
+    """
+    import asyncio
+    import signal
+
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(main)
+    signalled = False
+
+    def on_signal(sig: signal.Signals) -> None:
+        nonlocal signalled
+        if signalled:
+            logger.warning("already shutting down (%s ignored); SIGKILL forces", sig.name)
+            return
+        signalled = True
+        logger.info("%s received: draining runs and shutting down", sig.name)
+        task.cancel()
+
+    handled = (signal.SIGINT, signal.SIGTERM)
+    for sig in handled:
+        loop.add_signal_handler(sig, on_signal, sig)
+    try:
+        await task
+    except asyncio.CancelledError:
+        if not signalled:  # cancelled from outside, not by us
+            raise
+    finally:
+        for sig in handled:
+            loop.remove_signal_handler(sig)
 
 
 def _add_crons(sub: SubparsersAction) -> None:

@@ -2,7 +2,6 @@
 
 import asyncio
 import datetime as dt
-import math
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
@@ -61,6 +61,8 @@ SHORT_LEASE_S = 0.1
 SHORT_LEASE_SETTINGS = Settings(
     _env_file=None, runs=RunsSettings(heartbeat_s=0.01, lease_s=SHORT_LEASE_S)
 )
+
+GRACE_S = 10.0
 
 
 class State(TypedDict, total=False):
@@ -247,11 +249,6 @@ class GatedObserver:
 
 
 @dataclass
-class Budget:
-    deadline: float = math.inf
-
-
-@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -260,7 +257,7 @@ class Resources:
     observers: list[Any]
     queue: RunQueue | None
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
+    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
     observability: Observability = field(
         default_factory=lambda: Observability(metrics=LoggingMetrics())
     )

@@ -6,7 +6,10 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from graph_agent._internal import bootstrap
+from graph_agent._internal.bootstrap import ShutdownBudget
+from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import LimitsSettings, Settings
+from graph_agent._internal.limits import ShuttingDown
 from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 
 LAG_TASK = "loop-lag-sampler"
@@ -150,3 +153,65 @@ def test_sample_publishes_every_gauge() -> None:
 
     bootstrap._sample(Observability(metrics=Metrics()), {"a": lambda: 1, "b": lambda: 2.5})
     assert seen == {"a": 1.0, "b": 2.5}
+
+
+async def test_begin_shutdown_closes_admission_starts_the_clock_and_drains(
+    settings: Settings,
+) -> None:
+    async with bootstrap.open_container(
+        settings.model_copy(update={"limits": _one_worker(settings)}), memory=True
+    ) as c:
+        loop = asyncio.get_running_loop()
+        c.begin_shutdown()
+        deadline = c.shutdown_budget.deadline
+        assert loop.time() < deadline <= loop.time() + settings.limits.shutdown_grace_s
+        assert c.active_runs.draining
+        with pytest.raises(ShuttingDown):
+            await c.limits.admit().__aenter__()
+        c.begin_shutdown()  # a second signal does not move the clock
+        assert c.shutdown_budget.deadline == deadline
+    assert c.shutdown_budget.deadline == deadline  # nor does the close
+
+
+async def test_close_waits_for_the_runs_in_flight(settings: Settings) -> None:
+    gate = asyncio.Event()
+    async with bootstrap.open_container(
+        settings.model_copy(update={"limits": _one_worker(settings)}), memory=True
+    ) as c:
+        task = c.active_runs.spawn(gate.wait())
+        asyncio.get_running_loop().call_later(0.05, gate.set)
+    assert task.done() and c.active_runs.draining  # the close drained and awaited it
+
+
+def test_short_grace_warns_naming_the_longest_timeout(caplog: pytest.LogCaptureFixture) -> None:
+    short = Settings(
+        _env_file=None,
+        limits=LimitsSettings(shutdown_grace_s=30),
+        flows={
+            "slow": FlowSpec(target="m:g", timeout_s=120),
+            "fast": FlowSpec(target="m:g", timeout_s=10),
+        },
+    )
+    with caplog.at_level("WARNING", logger=bootstrap.__name__):
+        bootstrap._warn_short_grace(short)
+    assert "flow slow (120s)" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=bootstrap.__name__):
+        bootstrap._warn_short_grace(
+            short.model_copy(update={"limits": LimitsSettings(shutdown_grace_s=120)})
+        )
+        bootstrap._warn_short_grace(Settings(_env_file=None))  # nothing declared
+    assert caplog.text == ""
+
+
+def test_shutdown_budget_start_is_idempotent() -> None:
+    budget = ShutdownBudget(10)
+    loop = asyncio.new_event_loop()
+    try:
+        budget.start(loop)
+        first = budget.deadline
+        loop.run_until_complete(asyncio.sleep(0.01))
+        budget.start(loop)
+        assert budget.deadline == first
+    finally:
+        loop.close()

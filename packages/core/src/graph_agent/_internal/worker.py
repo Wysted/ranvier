@@ -4,6 +4,7 @@ Worker processes build their own container; nothing is shared with the API proce
 prune and cron tasks (housekeeping) live on the same app.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -20,9 +21,15 @@ from psycopg import AsyncConnection
 
 from graph_agent._internal.config.manifest import CronSpec
 from graph_agent._internal.db.pool import with_options
+from graph_agent._internal.limits import graceful_wait_s
 from graph_agent._internal.queue import EXECUTE_RUN, ProcrastinateRunQueue
 from graph_agent._internal.runtime.checkpointer import prune_checkpoints
-from graph_agent._internal.runtime.runner import RunnerResources, execute_run
+from graph_agent._internal.runtime.runner import (
+    RunnerResources,
+    execute_run,
+    settle_runs,
+    start_drain,
+)
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository
 
 logger = logging.getLogger(__name__)
@@ -318,9 +325,34 @@ def _register_housekeeping(
 
 
 async def run_worker(container: RunnerResources) -> None:
-    """Serve jobs until cancelled, `limits.max_active_runs` at a time (heartbeat defaults)."""
+    """Serve jobs, `limits.max_active_runs` at a time (heartbeat defaults), until cancelled.
+
+    Cancelling this task is the graceful stop (the entrypoint does it on SIGTERM/SIGINT;
+    Procrastinate's own signal handlers are off). Order: stop fetching, ask the runs in flight
+    to drain (each one stops after its superstep, releases its lease and defers itself), wait
+    for the jobs and for every cleanup, all bounded by the shutdown budget. The caller closes the
+    pools afterwards. Jobs still running at `graceful_wait_s` are aborted (they hand over too).
+    """
     app = register_tasks(container)
-    await app.run_worker_async(
-        concurrency=container.settings.limits.max_active_runs,
-        fetch_job_polling_interval=FETCH_POLL_INTERVAL_S,
+    limits = container.settings.limits
+    worker = asyncio.create_task(
+        app.run_worker_async(
+            concurrency=limits.max_active_runs,
+            fetch_job_polling_interval=FETCH_POLL_INTERVAL_S,
+            install_signal_handlers=False,
+            shutdown_graceful_timeout=graceful_wait_s(limits.shutdown_grace_s),
+        ),
+        name="procrastinate-worker",
     )
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        if worker.done():  # the worker ended by itself, this cancel is ours alone
+            raise
+        worker.cancel()  # Procrastinate stops fetching, waits for its running jobs, then re-raises
+        start_drain(container.active_runs, container.shutdown_budget)
+        await asyncio.wait({worker})
+        if not worker.cancelled() and (exc := worker.exception()) is not None:
+            logger.error("worker failed while stopping", exc_info=exc)
+        await settle_runs(container.active_runs, container.shutdown_budget)
+        raise

@@ -19,6 +19,7 @@ from procrastinate.periodic import PeriodicDeferrer
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import SecretStr
 
+from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import CronSpec, FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import MigrationError, advisory_lock, apply_migrations
@@ -59,6 +60,8 @@ CRON = CronSpec(schedule="0 3 * * *", input={"source": "daily"})
 EXECUTE = "graph_agent.execute_run"
 ran: list[str] = []
 
+GRACE_S = 10.0
+
 
 class State(TypedDict, total=False):
     x: int
@@ -84,11 +87,6 @@ def user_module() -> Iterator[None]:
 
 
 @dataclass
-class Budget:
-    deadline: float = float("inf")
-
-
-@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -97,7 +95,7 @@ class Resources:
     queue: RunQueue | None
     observers: list[RunObserver] = field(default_factory=list)
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
+    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
     observability: Observability = field(
         default_factory=lambda: Observability(metrics=LoggingMetrics())
     )
