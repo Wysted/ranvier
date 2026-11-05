@@ -1,4 +1,3 @@
-from langchain_core.tools import BaseTool
 from langgraph.graph import START, MessagesState, StateGraph
 
 from graph_agent import AgentSpec, FlowContext, as_tool
@@ -18,7 +17,7 @@ async def research(
         AgentSpec(name="summarizer", profile="fast", system_prompt=SUMMARIZER_PROMPT)
     )
     # As a tool, the lead agent calls it with a task string and gets the final reply back.
-    summarize: BaseTool = as_tool(
+    summarize = as_tool(
         summarizer, name="summarize", description="Summarize a text in two sentences."
     )
     # MCP tools come from `[mcp.servers.docs]` through `mcp_servers`; no client code here.
