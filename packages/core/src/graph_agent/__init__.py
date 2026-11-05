@@ -1,7 +1,8 @@
 from importlib.metadata import version
 
+from graph_agent._internal.agents.spec import AgentSpec
 from graph_agent._internal.runtime.context import FlowContext, RunContext
 
 __version__ = version("graph-agent")
 
-__all__ = ["FlowContext", "RunContext", "__version__"]
+__all__ = ["AgentSpec", "FlowContext", "RunContext", "__version__"]
