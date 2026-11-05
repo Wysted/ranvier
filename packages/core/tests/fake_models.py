@@ -1,5 +1,7 @@
 """Fake chat model for agent tests: `GenericFakeChatModel` lacks `bind_tools`."""
 
+# shortcut: local fake until runtime/offline.py (T17) lands on main; switch to it then
+
 from collections.abc import Iterator
 from typing import Any
 
