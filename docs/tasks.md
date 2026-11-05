@@ -33,7 +33,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T25 | Worker housekeeping: stalled jobs, orphan sweep, checkpoint prune, crons; `worker` and `crons` CLI | 8 | T24 | sa-dev-py | [T25](tasks/T25-worker-housekeeping.md) | todo |
 | T26 | Graceful shutdown: SIGTERM -> stop admission, `RunControl.request_drain()`, requeue; shutdown timeouts | 8 | T23, T24, S1 | sa-dev-py | [T26](tasks/T26-graceful-shutdown.md) | todo |
 | T27 | `agents/spec.py` + `agents/tools.py`: `AgentSpec`, tool registry, timeout/semaphore wrappers, thread/process isolation | 9 | T05, T09 | sa-dev-py | [T27](tasks/T27-agent-spec-tools.md) | todo |
-| T28 | `agents/skills.py`: SKILL.md loader + `load_skill` middleware | 9 | T02 | sa-dev-py | [T28](tasks/T28-skills.md) | todo |
+| T28 | `agents/skills.py`: SKILL.md loader + `load_skill` middleware | 9 | T02 | sa-dev-py | [T28](tasks/T28-skills.md) | done |
 | T29 | `agents/mcp.py`: `McpToolSource` port + own adapter over `mcp` SDK v2, tests with in-process FastMCP | 9 | T05, T09, S2 | sa-dev-py | [T29](tasks/T29-mcp-adapter.md) | todo |
 | T30 | `agents/factory.py`: `build_agent`, `as_tool`, `ctx.agent(spec)` | 9 | T08, T12, T27, T28, T29 | sa-dev-py | [T30](tasks/T30-agent-factory.md) | todo |
 | T31 | `examples/` research flow (subagent + MCP) with tests | 9 | T20, T30 | sa-dev-py | [T31](tasks/T31-example-research.md) | todo |

@@ -8,7 +8,7 @@ unblocks: [T30, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T28-skills
-status: todo
+status: done
 ---
 
 ## Goal

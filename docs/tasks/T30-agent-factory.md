@@ -46,3 +46,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Subagent patterns (node vs tool) are plain LangGraph; add no helper beyond `as_tool`.
 - Beyond tasks.md deps: T19's `flow_context` will call `build_agent` later.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T28 review (orchestrator, approved scope extension: you may edit `_internal/agents/skills.py`): (1) extend the system prompt preserving `request.system_message.content_blocks` (pattern of langchain `TodoListMiddleware`) instead of `.text`; (2) add a test through `awrap_model_call` and an end-to-end test through `create_agent` with a fake model that supports `bind_tools`; (3) add `shortcut: ASCII-only skill names, stricter than skills-ref; relax if a real skill needs it` on `_NAME_PATTERN`.
