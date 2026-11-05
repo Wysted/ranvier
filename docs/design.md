@@ -326,7 +326,7 @@ State is JSON-serializable by convention; a value the encoder cannot serialize p
 | Piece | v0.1 behavior |
 |-------|---------------|
 | Tool registry | `[tools.*]` entries imported lazily, wrapped once with timeout, semaphore and isolation; tool objects passed directly get the default limits |
-| MCP port | `McpToolSource.tools(server) -> Sequence[BaseTool]`. Own adapter: one `mcp.Client` per server with its own `httpx2.AsyncClient` (headers, timeouts), entered in the composition root; lists tools once (paginated); each tool becomes `StructuredTool(name, description, args_schema=inputSchema, coroutine=..., response_format="content_and_artifact")`; wraps each call with the server semaphore and timeout; reconnects on session loss |
+| MCP port | `McpToolSource.tools(server) -> Sequence[BaseTool]`. Own adapter: one `mcp.Client` per server over `streamable_http_client(url, http_client=...)` with its own `httpx2.AsyncClient` (headers, `Timeout(timeout_s, read=...)`, a transport that turns pre-response connect errors into a 502); each Client is entered and held by its own owner task (the composition root only registers the owner's stop in its `AsyncExitStack`; it never enters a Client itself, because a transport error cancels the entering task, S2); lists tools once (paginated); each tool becomes `StructuredTool(name, description, args_schema=inputSchema, coroutine=..., response_format="content_and_artifact")`; wraps each call with the server semaphore and timeout; reconnect = new `Client` + new transport on the next call when the owner task died or a handshake-era server answers `INVALID_REQUEST` (stale session), under a per-server lock; the failed call is not retried (S2) |
 | MCP results | `CallToolResult` text blocks become content; image and resource blocks become content blocks plus artifact; `structuredContent` goes to the artifact; `isError` becomes an error `ToolMessage`; `InputRequiredResult` raises a clear error in v0.1 (future: map to `interrupt()`) |
 | MCP transport | Streamable HTTP only; headers from env var names (`headers_env`), never inline secrets |
 | Skills | Reads `SKILL.md` per agentskills.io (required `name`, `description`), injects name and description into the system prompt, exposes `load_skill(name)` returning the body; no script execution |
@@ -372,7 +372,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); put drained runs back to `pending` and defer them; the requeued attempt resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
 | Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup | `database.*_pool_max` (5, 10, 5) |
 | Loop health | Lag sampler (sleep drift every 1 s): gauge, warning over threshold, `/readyz` | `limits.loop_lag_warn_ms` (100) |
-| Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another; supersteps are transactional | none |
+| Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another, except that a transport failure after an MCP response started fails every in-flight call on that MCP server (each an error `ToolMessage`; the next call reconnects; mcp 2.3.0, python-sdk #1393, S2); supersteps are transactional | none |
 | Blocking-call detection | `blockbuster` in the platform CI and in the starter CI | none |
 
 Tools are async by contract; sync tools must be declared `isolation = "thread"` (validated). Horizontal scale is more processes, watching the sum of pools against Postgres `max_connections`.
@@ -517,7 +517,7 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 
 | Check | Why it matters |
 |-------|----------------|
-| Own MCP adapter: one `mcp.Client` kept open for the process reuses its session; reconnect after a server restart; a failure on one request does not kill concurrent ones (python-sdk #2604, fixed only in v2: confirm in the pinned 2.x); image and resource blocks reach the chosen chat models | MCP port design |
+| OpenAI/Azure Chat Completions accept image parts inside `role=tool` messages (LangChain emits `image_url` parts there; MCP session behavior itself resolved by S2) | MCP results, profiles using OpenAI/Azure |
 | Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
 | `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |

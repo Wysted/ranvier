@@ -48,3 +48,4 @@ Shared files: none.
 - Never place secrets in config values; headers come from the environment at connect time.
 - tasks.md lists no dependency on T05, but the `mcp` server settings model is T05's; it is in an earlier wave.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From S2 (orchestrator, overrides any "entered in the passed AsyncExitStack" wording above): each `mcp.Client` is entered and held by its own owner task per server; the composition root only registers the owner's stop. Use the 502-converting httpx2 transport, reconnect on the next call under a per-server lock (owner task dead or `INVALID_REQUEST` stale session), never retry the failed call. Port from `bench/spikes/S2/s2.py` (`OwnedClient`) and add the missing lock. Tests: in-process `MCPServer` via `session_manager.run()` + base URL with explicit port; restart test needs uvicorn on a local port.
