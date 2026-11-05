@@ -8,7 +8,7 @@ unblocks: [T35]
 owner: sa-build-py
 reviewer: sa-review-py
 branch: task/T03-ci-workflow
-status: todo
+status: done
 ---
 
 ## Goal

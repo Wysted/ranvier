@@ -520,7 +520,6 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 | Own MCP adapter: one `mcp.Client` kept open for the process reuses its session; reconnect after a server restart; a failure on one request does not kill concurrent ones (python-sdk #2604, fixed only in v2: confirm in the pinned 2.x); image and resource blocks reach the chosen chat models | MCP port design |
 | Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
-| `uv add "git+...@tag#subdirectory=packages/core"` works | Distribution |
 | `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |
 | Studio via `langgraph dev` can load a shim that builds factories with a dev `FlowContext` | Dev experience |
 | langgraph on 3.14: S5 passed with langgraph 1.2.19 / checkpoint-postgres 3.2.0 (classifiers still stop at 3.13; CI keeps testing 3.14 on every bump) | Runtime image |
