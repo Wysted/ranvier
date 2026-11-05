@@ -10,8 +10,9 @@ type Manifest = Callable[[str], None]  # writes graph-agent.toml
 
 MODULE_NAME = "t17_user_flows"
 MODULE = """
-from types import SimpleNamespace
 from typing import TypedDict
+
+from langchain_core.tools import tool
 
 from langgraph.graph import END, START, StateGraph
 
@@ -41,12 +42,34 @@ def uses_unknown_profile(ctx):
 
 async def uses_unknown_refs(ctx):
     ctx.tools("nope")
-    spec = SimpleNamespace(name="a", profile="main", tools=("web",), mcp_servers=("docs",))
-    await ctx.agent(spec)
+    from graph_agent._internal.agents.spec import AgentSpec
+
+    await ctx.agent(AgentSpec(name="a", profile="main", tools=("web",), mcp_servers=("docs",)))
     return _builder()
 
 
-def tool_fn(x: str) -> str:
+async def uses_tools(ctx):
+    names = [t.name for t in ctx.tools("echo", "sync_only", "broken")]
+    assert names == ["echo"], names
+    return _builder()
+
+
+async def uses_model(ctx):
+    ctx.model("main")
+    return _builder()
+
+
+async def raises_with_secret(ctx):
+    raise ValueError("token=hunter2")
+
+
+@tool(description="Echo.")
+async def echo(x: str) -> str:
+    return x
+
+
+@tool(description="Sync only.")
+def sync_only(x: str) -> str:
     return x
 """
 
@@ -80,13 +103,14 @@ def test_good_manifest_prints_diagram(
 [flows.summarize]
 target = "MOD:good"
 [tools.echo]
-target = "MOD:tool_fn"
+target = "MOD:echo"
 """
     )
     assert main(["validate", "--offline", "--diagram"]) == 0
     out = capsys.readouterr().out
-    assert "%% flow: summarize" in out
-    assert "n" in out
+    assert "flow: summarize" in out
+    assert "```mermaid" in out
+    assert "__start__ --> n" in out
 
 
 def test_collects_every_problem_and_names_keys(
@@ -105,21 +129,31 @@ target = "MOD:not_a_graph"
 target = "MOD:uses_unknown_profile"
 [flows.refs]
 target = "MOD:uses_unknown_refs"
+[flows.secret]
+target = "MOD:raises_with_secret"
 [tools.bad]
 target = "MOD:nothing_here"
+[tools.sync]
+target = "MOD:sync_only"
+[tools.scalar]
+target = "MOD:not_a_graph"
 """
     )
     assert main(["validate", "--offline"]) == 1
     err = capsys.readouterr().err
     assert "flows.missing.target: " in err
-    assert "flows.prebuilt.target: " in err
+    assert "flows.prebuilt: flows.prebuilt.target is a compiled graph" in err
     assert "compiled graph" in err
-    assert "flows.scalar.target: " in err
+    assert "flows.scalar: flows.scalar.target must be a StateGraph" in err
     assert "flows.profile.target: unknown LLM profile 'ghost'" in err
     assert "flows.refs.target: unknown tool 'nope'" in err
     assert "flows.refs.target: unknown tool 'web'" in err
     assert "flows.refs.target: unknown MCP server 'docs'" in err
-    assert "tools.bad.target: " in err
+    assert "tools.bad: " in err
+    assert "tools.sync" in err and "isolation = 'thread'" in err  # the registry's own rule
+    assert "tools.scalar" in err and "not a langchain tool" in err
+    assert "flows.secret.target: ValueError at " in err
+    assert "hunter2" not in err
 
 
 def test_bad_cron_names_the_key(manifest: Manifest, capsys: pytest.CaptureFixture[str]) -> None:
@@ -152,8 +186,54 @@ target = "MOD:good"
 """
     )
     assert main(["validate"]) == 1
-    assert "mcp.servers.docs.headers_env.Authorization: T17_KEY is not set" in (
+    assert "mcp.servers.docs.headers_env: MCP server 'docs': env var T17_KEY" in (
         capsys.readouterr().err
     )
     # --offline skips the environment entirely
     assert main(["validate", "--offline"]) == 0
+
+
+def test_flow_sees_wrapped_registry_tools_and_unknown_names(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest(
+        """
+[flows.t]
+target = "MOD:uses_tools"
+[tools.echo]
+target = "MOD:echo"
+[tools.sync_only]
+target = "MOD:sync_only"
+[tools.broken]
+target = "MOD:nothing_here"
+"""
+    )
+    assert main(["validate", "--offline"]) == 1
+    err = capsys.readouterr().err
+    assert "tools.sync_only" in err and "tools.broken" in err
+    assert "flows.t" not in err  # the flow itself built fine: failing tools are omitted
+
+
+def test_real_mode_builds_models_up_front(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest(
+        PROFILE
+        + """
+[llm.profiles.other]
+provider = "ollama"
+model = "x"
+[flows.m]
+target = "MOD:uses_model"
+"""
+    )
+    assert main(["validate"]) == 0, capsys.readouterr().err
+
+
+def test_missing_or_broken_manifest_is_one_line(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest("this is = not [valid toml")
+    assert main(["validate", "--offline"]) == 1
+    err = capsys.readouterr().err.strip()
+    assert len(err.splitlines()) == 1 and "Traceback" not in err

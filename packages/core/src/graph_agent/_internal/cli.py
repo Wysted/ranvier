@@ -37,6 +37,7 @@ def _validate(args: argparse.Namespace) -> int:
     # Lazy imports: langgraph and the settings stack are slow to load; other commands skip them.
     import asyncio
     import sys
+    import tomllib
 
     from pydantic import ValidationError
 
@@ -45,13 +46,16 @@ def _validate(args: argparse.Namespace) -> int:
 
     try:
         settings = Settings()
+    except (tomllib.TOMLDecodeError, FileNotFoundError) as exc:  # one line, no traceback
+        print(f"manifest: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     except ValidationError as exc:  # input is hidden: loc + msg never echo values
         for err in exc.errors(include_input=False, include_url=False, include_context=False):
             print(f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}", file=sys.stderr)
         return 1
 
     def show_diagram(flow: str, mermaid: str) -> None:
-        print(f"%% flow: {flow}\n{mermaid}")
+        print(f"flow: {flow}\n```mermaid\n{mermaid}\n```")
 
     problems = asyncio.run(
         validate_manifest(

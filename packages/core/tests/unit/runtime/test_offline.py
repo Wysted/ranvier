@@ -1,3 +1,4 @@
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from graph_agent._internal.runtime.offline import FakeChatModel
@@ -13,3 +14,15 @@ def test_scripted_replies_repeat_last_and_record_calls() -> None:
 def test_bind_tools_is_a_noop() -> None:
     model = FakeChatModel()
     assert model.bind_tools([]) is model
+
+
+def test_scripted_message_is_copied_not_mutated() -> None:
+    scripted = AIMessage("fixed")
+    reply = FakeChatModel(responses=[scripted]).invoke([HumanMessage("hi")])
+    assert reply is not scripted
+    assert scripted.id is None
+
+
+def test_empty_responses_rejected() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        FakeChatModel(responses=[])

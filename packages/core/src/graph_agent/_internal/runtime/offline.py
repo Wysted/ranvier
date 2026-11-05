@@ -16,9 +16,12 @@ DEFAULT_REPLY = "ok"
 
 
 class FakeChatModel(BaseChatModel):
-    """Replies with `responses` in order, repeating the last one; records every call."""
+    """Replies with `responses` in order, repeating the last one; records every call.
 
-    responses: Sequence[str | AIMessage] = (DEFAULT_REPLY,)
+    `calls` and the reply index are not safe under parallel branches (shared mutable state).
+    """
+
+    responses: Sequence[str | AIMessage] = Field(default=(DEFAULT_REPLY,), min_length=1)
     calls: list[list[BaseMessage]] = Field(default_factory=list)
 
     @property
@@ -34,7 +37,8 @@ class FakeChatModel(BaseChatModel):
     ) -> ChatResult:
         reply = self.responses[min(len(self.calls), len(self.responses) - 1)]
         self.calls.append(list(messages))
-        message = AIMessage(content=reply) if isinstance(reply, str) else reply
+        # langchain assigns ids in place: hand out a copy so scripted replies stay pristine
+        message = AIMessage(content=reply) if isinstance(reply, str) else reply.model_copy()
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def bind_tools(
