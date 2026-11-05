@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import (
@@ -11,6 +11,15 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
+)
+
+from graph_agent._internal.config.manifest import (
+    EnvName,
+    FlowSpec,
+    LlmSettings,
+    McpSettings,
+    Name,
+    ToolSpec,
 )
 
 ENV_PREFIX = "GRAPH_AGENT_"
@@ -67,7 +76,7 @@ class ApiKeyRef(BaseModel):
 
     model_config = _STRICT
 
-    key_env: str
+    key_env: EnvName
     tenant_id: str | None = None
 
 
@@ -136,12 +145,13 @@ class ObservabilitySettings(BaseModel):
 
 
 class Settings(BaseSettings):
-    # Top level tolerates unknown toml keys (manifest sections land in T05); groups stay strict.
+    # Unknown top-level keys fail naming the key (typo'd section in the toml).
     model_config = SettingsConfigDict(
         env_prefix=ENV_PREFIX,
         env_nested_delimiter=ENV_NESTED_DELIMITER,
         env_file=DEFAULT_ENV_FILE,
-        extra="ignore",
+        extra="forbid",
+        hide_input_in_errors=True,  # the outer model decides: keeps secrets out of error text
     )
 
     database: DatabaseSettings = DatabaseSettings()
@@ -150,7 +160,10 @@ class Settings(BaseSettings):
     runs: RunsSettings = RunsSettings()
     threads: ThreadsSettings = ThreadsSettings()
     observability: ObservabilitySettings = ObservabilitySettings()
-    # T05 appends flows, tools, llm and mcp here.
+    flows: dict[Name, FlowSpec] = {}
+    tools: dict[Name, ToolSpec] = {}
+    llm: LlmSettings = LlmSettings()
+    mcp: McpSettings = McpSettings()
 
     @classmethod
     def settings_customise_sources(
@@ -165,13 +178,27 @@ class Settings(BaseSettings):
         # environment only, never from the .env file (they locate it).
         env_file = os.environ.get(ENV_FILE_VAR)
         # Swap only while the source still carries the class default: `_env_file=None` wins.
-        if (
-            env_file
-            and isinstance(dotenv_settings, DotEnvSettingsSource)
-            and dotenv_settings.env_file == DEFAULT_ENV_FILE
-        ):
-            dotenv_settings = DotEnvSettingsSource(settings_cls, env_file=env_file)
+        if isinstance(dotenv_settings, DotEnvSettingsSource):
+            if env_file and dotenv_settings.env_file == DEFAULT_ENV_FILE:
+                dotenv_settings = DotEnvSettingsSource(settings_cls, env_file=env_file)
+            dotenv_settings = _FieldsOnlyDotEnv(settings_cls, env_file=dotenv_settings.env_file)
         return (init_settings, env_settings, dotenv_settings, _toml_source(settings_cls))
+
+
+class _FieldsOnlyDotEnv(DotEnvSettingsSource):
+    """With `extra="forbid"` pydantic-settings turns every unrelated .env line (OPENAI_API_KEY, ...)
+    into an extra key and rejects it. Keep real fields and GRAPH_AGENT_* lines (so a typo like
+    GRAPH_AGENT_DATBASE__URL still fails), minus the bootstrap vars that locate the files.
+    Typos in the PROCESS environment stay silent: EnvSettingsSource reads only known fields."""
+
+    def __call__(self) -> dict[str, Any]:
+        prefix = ENV_PREFIX.lower()
+        bootstrap = {CONFIG_FILE_VAR.lower(), ENV_FILE_VAR.lower()}
+        return {
+            k: v
+            for k, v in super().__call__().items()
+            if k in self.settings_cls.model_fields or (k.startswith(prefix) and k not in bootstrap)
+        }
 
 
 def _toml_source(settings_cls: type[BaseSettings]) -> TomlConfigSettingsSource:
