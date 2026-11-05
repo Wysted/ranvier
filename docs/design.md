@@ -90,6 +90,8 @@ graph_agent/
     runtime/
       context.py          # RunContext, FlowContext implementation
       flows.py            # flow resolution, lazy compile cache, version checks
+      validate.py         # manifest validation for the `validate` CLI (off the run hot path)
+      offline.py          # fake chat model for `validate --offline` (R3), re-exported by testing
       runner.py           # execute_run: claim, astream v2 -> events, finish
       runs.py             # runs repository: state machine, claims, leases, cancel flag
       events.py           # transport-agnostic run events

@@ -8,7 +8,7 @@ unblocks: [T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T17-cli-validate
-status: todo
+status: done
 ---
 
 ## Goal
