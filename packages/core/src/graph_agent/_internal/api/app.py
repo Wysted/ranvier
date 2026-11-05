@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from graph_agent._internal.api.auth import AuthError, build_authenticator
-from graph_agent._internal.api.dto import ERROR_STATUS
+from graph_agent._internal.api.dto import ERROR_STATUS, error_response
 from graph_agent._internal.api.routes import health, router
 from graph_agent._internal.bootstrap import open_container
 from graph_agent._internal.config.settings import Settings
@@ -29,14 +29,6 @@ _RETRYABLE_STATUS: Final = frozenset(
         HTTPStatus.GATEWAY_TIMEOUT,
     }
 )
-
-
-def error_response(
-    status: HTTPStatus, code: str, message: str, retryable: bool = False
-) -> JSONResponse:
-    """The one error body: `{code, message, retryable}`."""
-    body = {"code": code, "message": message, "retryable": retryable}
-    return JSONResponse(body, status_code=status)
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -61,8 +53,7 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         status = HTTPStatus(exc.status_code)
-        # `detail` is the code ("queue_unavailable") or Starlette's phrase ("Not Found").
-        code = str(exc.detail).lower().replace(" ", "_")
+        code = status.phrase.lower().replace(" ", "_")  # "Not Found" -> "not_found"
         return error_response(status, code, status.phrase, status in _RETRYABLE_STATUS)
 
     @app.exception_handler(Exception)
@@ -77,9 +68,10 @@ def register_error_handlers(app: FastAPI) -> None:
 def create_app(settings: Settings) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # First: may import the auth hook module (blocking I/O) and fails fast on a bad config
+        # before any pool is opened.
+        app.state.authenticator = await asyncio.to_thread(build_authenticator, settings.api)
         async with open_container(settings) as container:
-            # May import the auth hook module (blocking I/O) and fails fast on misconfiguration.
-            app.state.authenticator = await asyncio.to_thread(build_authenticator, settings.api)
             app.state.container = container
             yield
 

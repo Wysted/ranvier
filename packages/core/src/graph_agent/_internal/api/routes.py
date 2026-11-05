@@ -1,7 +1,6 @@
 """HTTP endpoints (design section 6): runs, SSE streams, thread state, admission."""
 
 import asyncio
-import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -10,7 +9,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from fastapi.sse import format_sse_event
 from starlette.responses import StreamingResponse
@@ -24,6 +23,7 @@ from graph_agent._internal.api.dto import (
     RunRequest,
     SseEncoder,
     ThreadState,
+    error_response,
 )
 from graph_agent._internal.bootstrap import Container
 from graph_agent._internal.limits import TooManyRuns
@@ -40,6 +40,7 @@ from graph_agent._internal.runtime.runs import (
     Run,
     RunError,
     RunsRepository,
+    RunStatus,
     ThreadPin,
 )
 
@@ -48,8 +49,6 @@ logger = logging.getLogger(__name__)
 # A client that does not read for this long is dropped (its run is cancelled): the runner's
 # bounded queue would otherwise hold the thread and keep the lease alive behind a stuck socket.
 SSE_SEND_TIMEOUT_S: Final = 30.0
-RUN_HANDED_OVER: Final = "run_handed_over"  # shortcut: not an ErrorCode; add it there with T24/T26
-QUEUE_UNAVAILABLE: Final = "queue_unavailable"
 READY_DB_TIMEOUT_S: Final = 2.0
 _SSE_HEADERS: Final = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
@@ -136,13 +135,11 @@ async def _frames(
 ) -> AsyncGenerator[bytes]:
     """SSE bytes of one inline run; ends after the terminal frame."""
     encoder = SseEncoder(run_id)
-    seq = 0
     terminal = False
     event = first
     async with aclosing(agen):  # leaving early (encoder failure, disconnect) cancels the run
         while event is not None:
             frame = encoder.encode(event)
-            seq += 1
             yield format_sse_event(data_str=frame.raw_data, event=frame.event, id=frame.id)
             if frame.event == "error" or isinstance(event, EndEvent | ErrorEvent):
                 terminal = True  # an encoder `error` frame also ends the stream
@@ -150,17 +147,15 @@ async def _frames(
             event = await anext(agen, None)
     if not terminal:
         # Drained for shutdown (or the claim was lost): the run goes on elsewhere; the client polls.
-        body = {
-            "code": RUN_HANDED_OVER,
-            "message": "run handed over to another executor; poll the run for its result",
-            "retryable": True,
-            "run_id": str(run_id),
-        }
-        yield format_sse_event(data_str=json.dumps(body), event="error", id=f"{run_id}:{seq + 1}")
+        frame = encoder.handed_over()
+        yield format_sse_event(data_str=frame.raw_data, event=frame.event, id=frame.id)
 
 
 class _SseResponse(StreamingResponse):
     """`text/event-stream` with a per-send timeout and a guaranteed close of the run's stream."""
+
+    # shortcut: no SSE ping; proxies with an idle timeout shorter than the longest silent node
+    # cancel inline runs; add a 15 s ping before the deployment docs (T34/T35)
 
     media_type = "text/event-stream"
 
@@ -176,13 +171,22 @@ class _SseResponse(StreamingResponse):
         self._active = active
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        send_timed_out = False
+
         async def bounded(message: Message) -> None:
-            with anyio.fail_after(SSE_SEND_TIMEOUT_S):
-                await send(message)
+            nonlocal send_timed_out
+            try:
+                with anyio.fail_after(SSE_SEND_TIMEOUT_S):
+                    await send(message)
+            except TimeoutError:
+                send_timed_out = True
+                raise
 
         try:
             await super().__call__(scope, receive, bounded)
         except TimeoutError:
+            if not send_timed_out:  # a TimeoutError from the stream itself is a real failure
+                raise
             logger.warning("SSE client stalled for %ss; dropping the stream", SSE_SEND_TIMEOUT_S)
         finally:
             # Own task + strong reference (1q): the scope that got cancelled cancels every await.
@@ -193,6 +197,20 @@ class _SseResponse(StreamingResponse):
             await self._frames.aclose()  # cancels the run if it is still going
         finally:
             await self._stack.aclose()  # releases the admission slot
+
+
+async def _cancel_run(container: Container, run: Run) -> None:
+    """Best-effort `request_cancel` that survives the caller's cancellation (1q)."""
+
+    async def cancel() -> None:
+        try:
+            await _runs(container).request_cancel(run.run_id, run.thread_id)
+        except Exception:
+            # shortcut: if this also fails the row stays pending and the orphan sweep re-defers
+            # it, so the run may still execute; upgrade if that surprises clients.
+            logger.exception("could not cancel run %s after a failed request", run.run_id)
+
+    await asyncio.shield(container.active_runs.spawn(cancel()))
 
 
 async def _stream(
@@ -209,12 +227,13 @@ async def _stream(
         try:
             # The claim (thread_busy) happens before the first event: still a plain HTTP error.
             first = await anext(agen, None)
-        except RunError as exc:
-            if exc.code is ErrorCode.THREAD_BUSY:  # the pending row would stay claimable
-                await _runs(container).request_cancel(run.run_id, thread_id)
-            raise
         except BaseException:
-            await agen.aclose()
+            # Claim refused, DB error, handler cancelled: the client gets an error, so the row
+            # must not stay claimable.
+            try:
+                await _cancel_run(container, run)
+            finally:
+                await agen.aclose()
             raise
         frames = _frames(agen, first, run.run_id)
         return _SseResponse(frames, stack.pop_all(), container.active_runs)
@@ -222,17 +241,25 @@ async def _stream(
 
 async def _background(
     container: Container, principal: Principal, thread_id: uuid.UUID, req: RunRequest
-) -> JSONResponse:
+) -> RunAccepted:
     queue = container.queue
     if queue is None:
-        raise HTTPException(HTTPStatus.SERVICE_UNAVAILABLE, QUEUE_UNAVAILABLE)
+        raise RunError(ErrorCode.QUEUE_UNAVAILABLE, "no job queue in this process", retryable=True)
     run = await _insert(
         container, thread_id, req, await _check_request(container, principal, thread_id, req)
     )
-    # A failed defer leaves the row pending: the orphan sweep re-defers it (design section 5).
-    await queue.defer(run.run_id, run.thread_id)
-    body = RunAccepted(run_id=run.run_id, thread_id=run.thread_id)
-    return JSONResponse(body.model_dump(mode="json"), status_code=HTTPStatus.ACCEPTED)
+    try:
+        await queue.defer(run.run_id, run.thread_id)
+    except BaseException as exc:
+        # The client sees an error, so the row must not run behind its back (see _cancel_run).
+        await _cancel_run(container, run)
+        if not isinstance(exc, Exception):
+            raise
+        logger.error("could not defer run %s", run.run_id, exc_info=exc)
+        raise RunError(
+            ErrorCode.QUEUE_UNAVAILABLE, "could not enqueue the run; retry", retryable=True
+        ) from None
+    return RunAccepted(run_id=run.run_id, thread_id=run.thread_id)
 
 
 # -- endpoints ------------------------------------------------------------------------------------
@@ -254,13 +281,14 @@ async def readyz(request: Request) -> JSONResponse:
         if pool is None:
             continue
         try:
-            async with pool.connection(timeout=READY_DB_TIMEOUT_S) as conn:
+            async with asyncio.timeout(READY_DB_TIMEOUT_S), pool.connection() as conn:
                 await conn.execute("SELECT 1")
         except Exception as exc:  # any failure means not ready; the type is the reason
             problems.append(f"{name} pool: {type(exc).__name__}")
     if problems:
-        body = {"code": "not_ready", "message": "; ".join(problems), "retryable": True}
-        return JSONResponse(body, status_code=HTTPStatus.SERVICE_UNAVAILABLE)
+        return error_response(
+            HTTPStatus.SERVICE_UNAVAILABLE, "not_ready", "; ".join(problems), retryable=True
+        )
     return JSONResponse({"status": "ready"})
 
 
@@ -274,7 +302,7 @@ async def list_flows(c: Ctr) -> list[FlowItem]:
 
 
 @router.post("/runs", status_code=HTTPStatus.ACCEPTED)
-async def create_run(req: RunRequest, c: Ctr, who: Caller) -> JSONResponse:
+async def create_run(req: RunRequest, c: Ctr, who: Caller) -> RunAccepted:
     return await _background(c, who, uuid.uuid4(), req)
 
 
@@ -286,7 +314,7 @@ async def stream_new_run(req: RunRequest, c: Ctr, who: Caller) -> _SseResponse:
 @router.post("/threads/{thread_id}/runs", status_code=HTTPStatus.ACCEPTED)
 async def create_thread_run(
     thread_id: uuid.UUID, req: RunRequest, c: Ctr, who: Caller
-) -> JSONResponse:
+) -> RunAccepted:
     return await _background(c, who, thread_id, req)
 
 
@@ -343,5 +371,12 @@ async def thread_state(thread_id: uuid.UUID, c: Ctr, who: Caller) -> ThreadState
 @router.delete("/threads/{thread_id}", status_code=HTTPStatus.NO_CONTENT)
 async def delete_thread(thread_id: uuid.UUID, c: Ctr, who: Caller) -> None:
     await _pin(c, who, thread_id)
-    await _runs(c).delete_thread(thread_id)  # thread_busy (409) while a run is running
+    runs = _runs(c)
+    # Checkpoints go before the rows: the rows are what makes a retry find the thread (and keeps
+    # the section 5 rules for a reused thread_id) if the checkpoint delete fails.
+    if any(r.status is RunStatus.RUNNING for r in await runs.list_for_thread(thread_id)):
+        raise RunError(ErrorCode.THREAD_BUSY, "thread has a running run", retryable=True)
     await c.checkpointer.adelete_thread(str(thread_id))
+    # shortcut: a run that starts between the check and here loses its checkpoints (the delete
+    # below still answers thread_busy); upgrade to a per-thread lock if live threads get deleted.
+    await runs.delete_thread(thread_id)

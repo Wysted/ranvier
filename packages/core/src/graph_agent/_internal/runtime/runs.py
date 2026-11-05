@@ -46,6 +46,8 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "not_found"
     INVALID_REQUEST = "invalid_request"
     UNAUTHORIZED = "unauthorized"
+    QUEUE_UNAVAILABLE = "queue_unavailable"
+    RUN_HANDED_OVER = "run_handed_over"  # SSE only: an inline run drained for shutdown
 
 
 class RunError(Exception):

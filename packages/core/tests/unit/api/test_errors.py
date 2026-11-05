@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from graph_agent._internal.api.app import register_error_handlers
 from graph_agent._internal.api.auth import AuthError
+from graph_agent._internal.api.dto import RETRY_AFTER_S
 from graph_agent._internal.runtime.runs import ErrorCode, RunError
 
 
@@ -32,7 +33,15 @@ def _app() -> FastAPI:
 
     @app.get("/queue")
     async def queue() -> None:
-        raise HTTPException(HTTPStatus.SERVICE_UNAVAILABLE, "queue_unavailable")
+        raise RunError(ErrorCode.QUEUE_UNAVAILABLE, "no queue", retryable=True)
+
+    @app.get("/busy")
+    async def busy() -> None:
+        raise RunError(ErrorCode.TOO_MANY_RUNS, "full", retryable=True)
+
+    @app.get("/gateway")
+    async def gateway() -> None:
+        raise HTTPException(HTTPStatus.BAD_GATEWAY)
 
     @app.get("/boom")
     async def boom() -> None:
@@ -54,6 +63,7 @@ async def _get(method: str, path: str, **kwargs: Any) -> httpx.Response:
         ("/auth", HTTPStatus.UNAUTHORIZED, "unauthorized", False),
         ("/queue", HTTPStatus.SERVICE_UNAVAILABLE, "queue_unavailable", True),
         ("/missing", HTTPStatus.NOT_FOUND, "not_found", False),
+        ("/gateway", HTTPStatus.BAD_GATEWAY, "bad_gateway", True),
     ],
 )
 async def test_every_error_has_the_one_body(
@@ -81,3 +91,8 @@ async def test_unexpected_error_shows_the_type_only() -> None:
         "message": "ValueError",
         "retryable": False,
     }
+
+
+async def test_401_and_429_carry_their_headers() -> None:
+    assert (await _get("GET", "/auth")).headers["www-authenticate"] == "Bearer"
+    assert (await _get("GET", "/busy")).headers["retry-after"] == str(RETRY_AFTER_S)

@@ -5,7 +5,7 @@ import json
 import sys
 import types
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from http import HTTPStatus
 from typing import Any, TypedDict
 
@@ -16,10 +16,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import SecretStr
 
+from graph_agent._internal.api import routes
 from graph_agent._internal.api.app import create_app
 from graph_agent._internal.bootstrap import Container
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import (
+    ApiKeyRef,
+    ApiSettings,
     DatabaseSettings,
     LimitsSettings,
     RunsSettings,
@@ -96,6 +99,11 @@ def settings(clean_database: str) -> Settings:
 
 @pytest.fixture
 async def app(settings: Settings, clean_database: str, user_module: None) -> AsyncIterator[FastAPI]:
+    async for app in _serve(settings, clean_database):
+        yield app
+
+
+async def _serve(settings: Settings, clean_database: str) -> AsyncGenerator[FastAPI]:
     pool = await open_app_pool(clean_database, max_size=2)
     try:
         await apply_migrations(pool)
@@ -114,6 +122,14 @@ async def app(settings: Settings, clean_database: str, user_module: None) -> Asy
 @pytest.fixture
 async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
+        yield http
+
+
+@pytest.fixture
+async def soft_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """Turns an unhandled 500 into a response instead of re-raising it into the test."""
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
         yield http
 
@@ -307,3 +323,155 @@ async def test_client_disconnect_cancels_an_inline_run(app: FastAPI, container: 
         rows = await (await conn.execute("SELECT status FROM graph_agent.runs")).fetchall()
     assert rows == [("cancelled",)]
     assert container.limits.active_runs == 0  # the admission slot came back
+
+
+async def _statuses(container: Container) -> list[str]:
+    assert container.app_pool is not None
+    async with container.app_pool.connection() as conn:
+        rows = await (await conn.execute("SELECT status FROM graph_agent.runs")).fetchall()
+    return [status for (status,) in rows]
+
+
+async def test_failed_checkpoint_delete_keeps_the_thread_deletable(
+    client: httpx.AsyncClient, soft_client: httpx.AsyncClient, container: Container
+) -> None:
+    thread = _sse(await _stream(client, {"flow": "echo", "input": {}}))[0][1]["thread_id"]
+    real = container.checkpointer.adelete_thread
+
+    async def broken(thread_id: str) -> None:
+        raise ConnectionError("db down")
+
+    container.checkpointer.adelete_thread = broken  # type: ignore[method-assign]
+    try:
+        failed = await soft_client.delete(f"/threads/{thread}")
+    finally:
+        container.checkpointer.adelete_thread = real  # type: ignore[method-assign]
+    assert failed.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert await _statuses(container) == ["success"]  # the rows survived: a retry finds the thread
+    assert (await client.delete(f"/threads/{thread}")).status_code == HTTPStatus.NO_CONTENT
+    assert await _statuses(container) == []
+
+
+async def test_inline_failure_before_the_first_event_cancels_the_row(
+    soft_client: httpx.AsyncClient, container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args: Any, **kwargs: Any) -> AsyncGenerator[Any]:
+        raise ConnectionError("db down")
+        yield
+
+    monkeypatch.setattr(routes, "execute_run", broken)
+    response = await soft_client.post("/runs/stream", json={"flow": "echo", "input": {}})
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+    assert await _statuses(container) == ["cancelled"]
+    assert container.limits.active_runs == 0
+
+
+async def test_failed_defer_cancels_the_row_and_answers_503(
+    client: httpx.AsyncClient, container: Container
+) -> None:
+    class BrokenQueue:
+        async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None:
+            raise ConnectionError("db down")
+
+    container.queue = BrokenQueue()
+    response = await client.post("/runs", json={"flow": "echo", "input": {}})
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+    assert response.json() == {
+        "code": "queue_unavailable",
+        "message": response.json()["message"],
+        "retryable": True,
+    }
+    assert await _statuses(container) == ["cancelled"]
+
+
+# -- auth and tenants -----------------------------------------------------------------------------
+
+KEYS = {"a": "key-tenant-a", "b": "key-tenant-b", "admin": "key-admin"}
+
+
+@pytest.fixture
+async def secured(
+    settings: Settings, clean_database: str, user_module: None, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[dict[str, httpx.AsyncClient]]:
+    """Clients for tenant a, tenant b, a key without tenant (admin) and no credentials."""
+    for name, value in KEYS.items():
+        monkeypatch.setenv(f"T23_KEY_{name.upper()}", value)
+    api = ApiSettings(
+        auth="api_keys",
+        keys={
+            "a": ApiKeyRef(key_env="T23_KEY_A", tenant_id="ta"),
+            "b": ApiKeyRef(key_env="T23_KEY_B", tenant_id="tb"),
+            "admin": ApiKeyRef(key_env="T23_KEY_ADMIN"),
+        },
+    )
+    served = _serve(settings.model_copy(update={"api": api}), clean_database)
+    app = await anext(served)
+    transport = httpx.ASGITransport(app=app)
+    clients = {
+        name: httpx.AsyncClient(
+            transport=transport,
+            base_url="http://t",
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+        )
+        for name, key in {**KEYS, "anon": ""}.items()
+    }
+    try:
+        yield clients
+    finally:
+        for http in clients.values():
+            await http.aclose()
+        await served.aclose()
+
+
+async def test_every_route_needs_credentials_but_health_is_open(
+    secured: dict[str, httpx.AsyncClient],
+) -> None:
+    anon, tid = secured["anon"], uuid.uuid4()
+    body = {"flow": "echo", "input": {}}
+    calls = [
+        ("GET", "/flows", None),
+        ("POST", "/runs", body),
+        ("POST", "/runs/stream", body),
+        ("POST", f"/threads/{tid}/runs", body),
+        ("POST", f"/threads/{tid}/runs/stream", body),
+        ("GET", f"/threads/{tid}/runs", None),
+        ("GET", f"/threads/{tid}/runs/{tid}", None),
+        ("POST", f"/threads/{tid}/runs/{tid}/cancel", None),
+        ("GET", f"/threads/{tid}/state", None),
+        ("DELETE", f"/threads/{tid}", None),
+    ]
+    for method, path, payload in calls:
+        response = await anon.request(method, path, json=payload)
+        assert response.status_code == HTTPStatus.UNAUTHORIZED, (method, path)
+        assert response.headers["www-authenticate"] == "Bearer"
+    wrong = await anon.get("/flows", headers={"Authorization": "Bearer nope"})
+    assert wrong.status_code == HTTPStatus.UNAUTHORIZED
+    assert (await anon.get("/healthz")).status_code == HTTPStatus.OK
+    assert (await anon.get("/readyz")).status_code == HTTPStatus.OK
+
+
+async def test_a_tenant_cannot_reach_another_tenants_thread(
+    secured: dict[str, httpx.AsyncClient],
+) -> None:
+    owner, other, admin = secured["a"], secured["b"], secured["admin"]
+    frames = _sse(await owner.post("/runs/stream", json={"flow": "echo", "input": {}}))
+    thread, run = frames[0][1]["thread_id"], frames[0][1]["run_id"]
+    base = f"/threads/{thread}"
+
+    foreign = [
+        ("GET", f"{base}/state", None),
+        ("GET", f"{base}/runs", None),
+        ("GET", f"{base}/runs/{run}", None),
+        ("POST", f"{base}/runs/{run}/cancel", None),
+        ("POST", f"{base}/runs/stream", {"flow": "echo", "input": {}}),
+        ("DELETE", base, None),
+    ]
+    for method, path, payload in foreign:
+        response = await other.request(method, path, json=payload)
+        assert response.status_code == HTTPStatus.NOT_FOUND, (method, path)
+        assert response.json()["code"] == "not_found"
+
+    # A key without tenant_id is an admin key: it sees every tenant (documented in Principal).
+    assert (await admin.get(f"{base}/state")).status_code == HTTPStatus.OK
+    assert [r["run_id"] for r in (await admin.get(f"{base}/runs")).json()] == [run]
+    assert (await owner.delete(base)).status_code == HTTPStatus.NO_CONTENT
