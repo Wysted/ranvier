@@ -8,11 +8,14 @@ from graph_agent._internal.api.dto import ERROR_STATUS, RunRequest, SseEncoder
 from graph_agent._internal.runtime.events import (
     CustomEvent,
     EndEvent,
+    ErrorEvent,
     InterruptEvent,
     InterruptItem,
+    MessagesEvent,
     MetadataEvent,
     UpdatesEvent,
     UsageTotals,
+    ValuesEvent,
 )
 from graph_agent._internal.runtime.runs import ErrorCode
 
@@ -26,10 +29,11 @@ def test_request_requires_exactly_one_of_input_and_command() -> None:
         "updates",
         "custom",
     ]
-    assert RunRequest.model_validate({"flow": "f", "input": None}).command is None
     assert RunRequest.model_validate({"flow": "f", "command": {"resume": 1}}).command
     for body in (
         {"flow": "f"},
+        {"flow": "f", "input": None},
+        {"flow": "f", "command": {"resume": None}},
         {"flow": "f", "input": 1, "command": {"resume": 1}},
         {"flow": "f", "input": 1, "stream_mode": ["debug"]},
     ):
@@ -64,3 +68,35 @@ def test_unserializable_value_yields_error_event() -> None:
     body = json.loads(frame.raw_data or "")
     assert body["code"] == ErrorCode.INTERNAL_ERROR
     assert body["retryable"] is False
+    assert "RuntimeError" not in (frame.raw_data or "")
+    assert "UpdatesEvent" not in (frame.raw_data or "")
+    with pytest.raises(RuntimeError):
+        enc.encode(EndEvent("success", UsageTotals(0, 0, 0)))
+
+
+def test_nan_and_infinity_become_null() -> None:
+    frame = SseEncoder("r1").encode(ValuesEvent((), {"a": float("nan"), "b": float("inf")}))
+    assert frame.event == "values"
+    assert json.loads(frame.raw_data or "") == {"ns": [], "values": {"a": None, "b": None}}
+
+
+def test_values_messages_and_error_frames() -> None:
+    enc = SseEncoder("r1")
+    val = enc.encode(ValuesEvent(("s",), {"k": 1}))
+    msg = enc.encode(MessagesEvent((), "n", None, "ai", "hi", [{"name": "t"}]))
+    err = enc.encode(ErrorEvent("internal_error", "boom", False))
+    assert [f.event for f in (val, msg, err)] == ["values", "messages", "error"]
+    assert json.loads(val.raw_data or "") == {"ns": ["s"], "values": {"k": 1}}
+    assert json.loads(msg.raw_data or "") == {
+        "ns": [],
+        "node": "n",
+        "id": None,
+        "type": "ai",
+        "content": "hi",
+        "tool_call_chunks": [{"name": "t"}],
+    }
+    assert json.loads(err.raw_data or "") == {
+        "code": "internal_error",
+        "message": "boom",
+        "retryable": False,
+    }

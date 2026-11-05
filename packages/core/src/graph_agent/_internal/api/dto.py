@@ -1,12 +1,13 @@
 """Wire DTOs of the HTTP API: requests, responses, the error body and the SSE mapping."""
 
+import logging
 import uuid
 from datetime import datetime
 from http import HTTPStatus
-from typing import Any, Final, Literal, Self
+from typing import Any, Final, Literal, Self, assert_never
 
 from fastapi.sse import ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticSerializationError, to_json
 
 from graph_agent._internal.runtime.events import (
@@ -22,6 +23,8 @@ from graph_agent._internal.runtime.events import (
 )
 from graph_agent._internal.runtime.runs import ErrorCode, Run, RunError, RunStatus
 
+logger = logging.getLogger(__name__)
+
 StreamMode = Literal["updates", "values", "messages", "custom"]
 DEFAULT_STREAM_MODES: Final[tuple[StreamMode, ...]] = ("updates", "custom")
 
@@ -35,8 +38,9 @@ ERROR_STATUS: Final[dict[ErrorCode, HTTPStatus]] = {
     ErrorCode.THREAD_INTERRUPTED: HTTPStatus.CONFLICT,
     ErrorCode.FLOW_VERSION_MISMATCH: HTTPStatus.CONFLICT,
     ErrorCode.TOO_MANY_RUNS: HTTPStatus.TOO_MANY_REQUESTS,
+    # Canonical DEADLINE_EXCEEDED mapping; 408 would blame the client.
     ErrorCode.RUN_TIMEOUT: HTTPStatus.GATEWAY_TIMEOUT,
-    ErrorCode.FLOW_BUILD_FAILED: HTTPStatus.INTERNAL_SERVER_ERROR,
+    ErrorCode.FLOW_BUILD_FAILED: HTTPStatus.SERVICE_UNAVAILABLE,
     ErrorCode.ORPHAN_RETRIES_EXHAUSTED: HTTPStatus.INTERNAL_SERVER_ERROR,
     ErrorCode.INTERNAL_ERROR: HTTPStatus.INTERNAL_SERVER_ERROR,
 }
@@ -53,11 +57,20 @@ class ErrorBody(_Dto):
 
     @classmethod
     def from_error(cls, error: RunError) -> Self:
-        return cls(code=error.code, message=error.message, retryable=error.retryable)
+        return cls.model_validate(error.as_dict())
 
 
 class ResumeCommand(_Dto):
+    # A bare `resume: {}` is an empty interrupt map in LangGraph, not a plain value.
     resume: Any
+
+    @field_validator("resume")
+    @classmethod
+    def _resume_not_null(cls, value: Any) -> Any:
+        # LangGraph raises EmptyInputError on a None resume.
+        if value is None:
+            raise ValueError("'resume' must not be null")
+        return value
 
 
 class RunRequest(_Dto):
@@ -69,9 +82,8 @@ class RunRequest(_Dto):
 
     @model_validator(mode="after")
     def _exactly_one_of_input_command(self) -> Self:
-        # `input: null` is a legitimate explicit input, so test presence, not value.
-        has_input = "input" in self.model_fields_set
-        if has_input == (self.command is not None):
+        # JSON null counts as absent, consistent with the DB CHECK.
+        if (self.input is None) == (self.command is None):
             raise ValueError("exactly one of 'input' or 'command' is required")
         return self
 
@@ -176,6 +188,8 @@ def _event_data(event: RunEvent) -> tuple[str, dict[str, Any]]:
                 "message": event.message,
                 "retryable": event.retryable,
             }
+        case _:
+            assert_never(event)
 
 
 class SseEncoder:
@@ -184,19 +198,25 @@ class SseEncoder:
     def __init__(self, run_id: uuid.UUID | str) -> None:
         self._run_id = str(run_id)
         self._seq = 0
+        self._failed = False
 
     def encode(self, event: RunEvent) -> ServerSentEvent:
+        """Raises after an `error` frame was emitted: the caller must stop and cancel the run."""
+        if self._failed:
+            raise RuntimeError("SSE stream already failed; stop and cancel/mark the run")
         name, data = _event_data(event)
         self._seq += 1
         try:
             # Serialize here: the framework would fail mid-stream, after the frame was accepted.
-            payload = to_json(data).decode()
+            payload = to_json(data, inf_nan_mode="null").decode()
         except PydanticSerializationError as exc:
             # Terminal `error` frame instead of a silent drop; the caller ends the stream.
+            logger.error("SSE %r payload not serializable: %s", name, exc)
+            self._failed = True
             payload = to_json(
                 {
                     "code": ErrorCode.INTERNAL_ERROR.value,
-                    "message": f"{name!r} event payload is not JSON-serializable: {exc}",
+                    "message": f"{name!r} payload is not JSON-serializable ({type(exc).__name__})",
                     "retryable": False,
                 }
             ).decode()
