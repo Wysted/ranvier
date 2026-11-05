@@ -387,3 +387,28 @@ async def _run_database(
 
 _COMMANDS.append(_add_migrate)
 _COMMANDS.append(_add_run)
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    settings = _load_settings()  # validates up front with readable errors
+    if settings is None:
+        return 1
+    # cli and api are sibling layers (C1): uvicorn imports the factory by name, which loads the
+    # same Settings() again inside the server process.
+    uvicorn.run(
+        "graph_agent._internal.api.app:app_from_env",
+        factory=True,
+        host=settings.api.host,
+        port=settings.api.port,
+    )
+    return 0
+
+
+def _add_serve(sub: SubparsersAction) -> None:
+    parser = sub.add_parser("serve", help="run the HTTP API (host and port: api.* settings)")
+    parser.set_defaults(handler=_serve)
+
+
+_COMMANDS.append(_add_serve)
