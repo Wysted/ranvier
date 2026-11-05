@@ -8,7 +8,7 @@ unblocks: [T02, T07, T35, S1, S2, S3, S4, S5]
 owner: sa-build-py
 reviewer: sa-review-py
 branch: task/T01-workspace-skeleton
-status: todo
+status: done
 ---
 
 ## Goal
