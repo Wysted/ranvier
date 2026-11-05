@@ -256,7 +256,7 @@ Invariant: partial unique index on `(thread_id) WHERE status = 'running'`: at mo
 | `running` | `success` / `error` | Graph finishes / raises or times out (`run_timeout`) |
 | `running` | `interrupted` | Stream reports interrupts; resuming is a new run on the thread |
 | `running` | `cancelled` | Heartbeat sees `cancel_requested`, or client disconnects from an inline run |
-| `running` | `pending` | Lease expired (orphan sweep) or graceful shutdown; `attempt > runs.max_attempts` goes to `error` (`orphan_retries_exhausted`) |
+| `running` | `pending` | Lease expired (orphan sweep) or graceful shutdown; a run is claimed at most `runs.max_attempts` times (sweep: `attempt >= max_attempts` goes to `error`, `orphan_retries_exhausted`); a graceful-shutdown drain gives the attempt back (`attempt - 1`), so deploys never exhaust retries |
 
 ### Serialization, recovery and housekeeping
 
