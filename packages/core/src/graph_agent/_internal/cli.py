@@ -278,9 +278,15 @@ def _run(args: argparse.Namespace) -> int:
     if settings is None:
         return 1
     thread_id: uuid.UUID = args.thread or uuid.uuid4()
-    if args.memory:
-        return asyncio.run(_run_memory(settings, args.flow, args.input, thread_id))
-    return asyncio.run(_run_database(settings, args.flow, args.input, args.resume, thread_id))
+    from graph_agent._internal.llm import LlmError
+
+    try:
+        if args.memory:
+            return asyncio.run(_run_memory(settings, args.flow, args.input, thread_id))
+        return asyncio.run(_run_database(settings, args.flow, args.input, args.resume, thread_id))
+    except LlmError as exc:  # startup config error, like `validate`: one line, no traceback
+        print(exc, file=sys.stderr)
+        return 1
 
 
 async def _run_memory(settings: "Settings", name: str, input: object, thread_id: "UUID") -> int:

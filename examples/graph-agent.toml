@@ -7,3 +7,16 @@ description = "Plain StateGraph, no model"
 target = "examples.flows.approval:graph"
 version = 1
 description = "Pauses with interrupt() until a human answers"
+
+[flows.research]
+target = "examples.flows.research:research"
+version = 1
+description = "Lead agent with MCP doc search and a summarizer subagent used as a tool"
+
+[llm.profiles.fast]
+provider = "ollama"
+model = "qwen3:4b"
+
+[mcp.servers.docs]
+# placeholder: point at a real MCP server
+url = "https://mcp.internal/docs"

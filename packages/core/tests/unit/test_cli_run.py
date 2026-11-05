@@ -120,6 +120,21 @@ def test_memory_timeout_is_an_error_event(run: Callable[..., tuple[int, Events]]
     assert events[-1]["data"]["code"] == "run_timeout"  # type: ignore[index]
 
 
+def test_missing_api_key_env_is_a_one_line_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest = tmp_path / "graph-agent.toml"
+    manifest.write_text(
+        manifest.read_text()
+        + '[llm.profiles.p]\nprovider = "openai"\nmodel = "m"\napi_key_env = "T18_NO_SUCH_KEY"\n'
+    )
+    monkeypatch.delenv("T18_NO_SUCH_KEY", raising=False)
+    assert main(["run", "good", "--memory", "--input", "{}"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "profile 'p': environment variable T18_NO_SUCH_KEY is not set\n"
+
+
 def test_unknown_flow_exits_one(run: Callable[..., tuple[int, Events]]) -> None:
     code, events = run("nope", "--memory", "--input", "{}")
     assert code == 1
