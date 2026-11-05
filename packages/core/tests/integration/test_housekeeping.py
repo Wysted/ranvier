@@ -37,10 +37,13 @@ from graph_agent._internal.runtime.flows import FlowRegistry
 from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
 from graph_agent._internal.worker import (
     FIRE_CRON,
+    PRUNE_LOCK_KEY,
+    PRUNE_WINDOW,
     SWEEP_LOCK_KEY,
     cron_periodic_id,
     fire_cron,
     prune_threads,
+    run_prune,
     run_sweep,
     run_worker,
 )
@@ -53,6 +56,7 @@ POLL_S = 0.02
 WAIT_S = 10.0
 SHORT_LEASE_S = 0.05
 STALE_AGE_S = 3600.0  # how far back a test moves `created_at` to make a run stale
+DELETE_AFTER = timedelta(days=2)
 CRON = CronSpec(schedule="0 3 * * *", input={"source": "daily"})
 EXECUTE = "graph_agent.execute_run"
 ran: list[str] = []
@@ -519,8 +523,8 @@ async def _thread_with_history(
 class _ReusedRuns(RunsRepository):
     """A client reuses every idle thread while `keep_latest` is still running (minutes in prod)."""
 
-    async def idle_threads(self, idle_for: timedelta) -> Any:
-        found = await super().idle_threads(idle_for)
+    async def idle_threads(self, idle_for: timedelta, **kwargs: Any) -> Any:
+        found = await super().idle_threads(idle_for, **kwargs)
         for thread_id, _ in found:
             await self.create(thread_id=thread_id, flow=FLOW, flow_version=1, input={})
         return found
@@ -626,6 +630,34 @@ async def test_prune_goes_on_after_a_thread_that_cannot_be_pruned(
     assert {r[0] for r in remaining} == {broken, stale}
 
 
+async def test_prune_leaves_threads_past_the_prune_window_alone(
+    res: Resources, pool: AsyncConnectionPool, history_graph: Any
+) -> None:
+    runs, _ = _parts(res)
+    cfg = res.settings.threads
+    inside = await _thread_with_history(res, history_graph, pool, cfg.ttl_days + 1)
+    past = await _thread_with_history(
+        res, history_graph, pool, cfg.ttl_days + PRUNE_WINDOW.days + 1
+    )
+    full = await _checkpoints(pool, past)
+    assert full > 1 and cfg.delete_after_days > cfg.ttl_days + PRUNE_WINDOW.days + 1
+
+    await prune_threads(res, runs)
+
+    assert await _checkpoints(pool, inside) == 1
+    assert await _checkpoints(pool, past) == full  # pruned already while it was in the window
+
+
+async def test_overlapping_prunes_run_one_and_skip_the_other(
+    res: Resources, pool: AsyncConnectionPool
+) -> None:
+    runs, _ = _parts(res)
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (PRUNE_LOCK_KEY,))
+        assert not await run_prune(res, runs)
+    assert await run_prune(res, runs)
+
+
 async def test_prune_ignores_a_thread_with_a_running_run(
     res: Resources, pool: AsyncConnectionPool
 ) -> None:
@@ -639,7 +671,10 @@ async def test_prune_ignores_a_thread_with_a_running_run(
         "WHERE run_id = %s RETURNING run_id",
         run_id,
     )
-    assert await runs.idle_threads(timedelta(days=1)) == []
+    assert (
+        await runs.idle_threads(timedelta(days=1), window=PRUNE_WINDOW, delete_after=DELETE_AFTER)
+        == []
+    )
 
 
 # --- migrate: Procrastinate schema -------------------------------------------------------------

@@ -9,8 +9,8 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
-from contextlib import aclosing
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing, asynccontextmanager
 from datetime import timedelta
 from typing import Final
 
@@ -92,6 +92,10 @@ SWEEP_CRON: Final = "* * * * *"  # every minute
 PRUNE_CRON: Final = "17 3 * * *"  # daily, off the hour
 # Any fixed bigint shared by every sweep (the migrations lock uses another key).
 SWEEP_LOCK_KEY: Final = 0x6772617073776570
+PRUNE_LOCK_KEY: Final = 0x6772617072756E65
+# A thread idle longer than `ttl_days` + this is no longer `keep_latest`-pruned (it was, once a
+# day, while inside the window); it waits for its whole-thread delete.
+PRUNE_WINDOW: Final = timedelta(days=7)
 # Heartbeat age after which a job counts as stalled (Procrastinate's `stalled_worker_timeout`).
 STALLED_HEARTBEAT_S: Final = 30
 # A lost host frees the sweep lock in ~25 s: idle 10 + 3 probes x 5 s. The timeout is off so a
@@ -101,9 +105,9 @@ LOCK_CONN_OPTIONS: Final = (
     "-c idle_in_transaction_session_timeout=0"
 )
 LOCK_CONNECT_TIMEOUT_S: Final = 10
-# Procrastinate's standalone LISTEN connection and the sweep's lock connection (logged by
-# `open_container(extra_connections=...)`).
-WORKER_EXTRA_CONNECTIONS: Final = 2
+# Procrastinate's standalone LISTEN connection and the sweep's and prune's lock connections
+# (logged by `open_container(extra_connections=...)`).
+WORKER_EXTRA_CONNECTIONS: Final = 3
 CRON_NAMESPACE: Final = uuid.UUID("5d0b8c3e-7a64-4f0e-9a52-6c1b3f8e2d17")
 SWEEP_SKIPPED_METRIC: Final = "sweep_skipped_consecutive"
 PERIODIC_ID_DIGEST_CHARS: Final = 16
@@ -164,18 +168,25 @@ async def run_sweep(
     The lock is `pg_try_advisory_xact_lock` on a dedicated connection held for the whole sweep:
     Postgres frees it when the connection or its host dies and no session state outlives it.
     """
+    async with _try_advisory_xact_lock(res, SWEEP_LOCK_KEY) as held:
+        if not held:
+            return False
+        await requeue_stalled(queue.app)
+        await redefer_orphans(res, runs, queue)
+    return True
+
+
+@asynccontextmanager
+async def _try_advisory_xact_lock(res: RunnerResources, key: int) -> AsyncIterator[bool]:
+    """Yields whether the lock was taken; held (on a dedicated connection) until the block ends."""
     url = res.settings.database.url.get_secret_value()
     conn = await AsyncConnection.connect(
         url, options=with_options(url, LOCK_CONN_OPTIONS), connect_timeout=LOCK_CONNECT_TIMEOUT_S
     )
     async with conn, conn.transaction():
-        cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (SWEEP_LOCK_KEY,))
+        cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (key,))
         row = await cur.fetchone()
-        if row is None or not row[0]:
-            return False
-        await requeue_stalled(queue.app)
-        await redefer_orphans(res, runs, queue)
-    return True
+        yield row is not None and bool(row[0])
 
 
 async def _delete_idle_thread(
@@ -196,17 +207,28 @@ async def _delete_idle_thread(
         )
 
 
+async def run_prune(res: RunnerResources, runs: RunsRepository) -> bool:
+    """One prune; False if another one is running (same lock pattern as the sweep)."""
+    async with _try_advisory_xact_lock(res, PRUNE_LOCK_KEY) as held:
+        if not held:
+            return False
+        await prune_threads(res, runs)
+    return True
+
+
 async def prune_threads(res: RunnerResources, runs: RunsRepository) -> None:
     """`keep_latest` past `threads.ttl_days` idle, whole-thread delete past `delete_after_days`.
 
     Per thread: one that fails (a delta-channel thread cannot be pruned, a write conflicts) logs
     a warning and the rest go on. Deletions run first so retention never depends on `keep_latest`.
+    A thread is pruned only while its idle age is within `PRUNE_WINDOW` past the ttl (one prune a
+    day: a few times), then left alone until its delete.
     """
     cfg = res.settings.threads
     delete_after = timedelta(days=cfg.delete_after_days)
-    # shortcut: re-prunes every thread in the keep_latest window on each run (idempotent);
-    # track pruned threads if the window gets large enough to hurt.
-    idle = await runs.idle_threads(timedelta(days=cfg.ttl_days))
+    idle = await runs.idle_threads(
+        timedelta(days=cfg.ttl_days), window=PRUNE_WINDOW, delete_after=delete_after
+    )
     doomed = [t for t, age in idle if age > delete_after]
     stale = [t for t, age in idle if age <= delete_after]
     if await _per_thread(
@@ -296,7 +318,8 @@ def _register_housekeeping(
     @app.periodic(cron=PRUNE_CRON, periodic_id=PRUNE_PERIODIC_ID, queueing_lock="prune")
     @app.task(name=PRUNE)
     async def prune_job(timestamp: int) -> None:
-        await prune_threads(res, runs)
+        if not await run_prune(res, runs):
+            logger.info("prune skipped: another one is running")
 
     @app.task(
         name=FIRE_CRON,
