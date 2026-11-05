@@ -83,12 +83,15 @@ class OtlpBackend:
                 f"drop the {_TRACES_PATH} / {_METRICS_PATH} suffix"
             )
         resource = Resource.create({SERVICE_NAME: SERVICE, PROJECT_NAME: SERVICE})
-        self._tracer_provider = TracerProvider(resource=resource)
+        # shutdown_on_exit=False: the container owns the flush; an atexit hook would retry an
+        # abandoned flush and keep the process alive past the shutdown deadline
+        self._tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
         self._tracer_provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint=base and base + _TRACES_PATH))
         )
         self._meter_provider = MeterProvider(
             resource=resource,
+            shutdown_on_exit=False,
             metric_readers=[
                 PeriodicExportingMetricReader(
                     OTLPMetricExporter(endpoint=base and base + _METRICS_PATH)

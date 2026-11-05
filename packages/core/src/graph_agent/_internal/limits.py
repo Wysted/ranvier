@@ -102,9 +102,10 @@ _FORKSERVER = multiprocessing.get_context("forkserver")  # 3.13 defaults to fork
 
 
 def _ignore_sigint() -> None:
-    """Pool worker initializer: Ctrl+C reaches the whole process group, but only the parent
-    decides when workers die (it kills them), so they must not print a KeyboardInterrupt."""
+    """Pool worker initializer: Ctrl+C (and systemd's cgroup-wide SIGTERM) reach every process,
+    but only the parent decides when workers die (it kills them on close; they exit if it dies)."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 def _kill_pool(pool: ProcessPoolExecutor) -> None:

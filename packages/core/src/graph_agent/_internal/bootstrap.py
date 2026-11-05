@@ -284,6 +284,7 @@ async def _shutdown_observability(obs: Observability, budget: ShutdownBudget) ->
     process alive past the deadline.
     """
     loop = asyncio.get_running_loop()
+    budget.start(loop)  # idempotent; bounds the flush even if startup aborted before the drain
     done: asyncio.Future[None] = loop.create_future()
 
     def settle(exc: BaseException | None) -> None:
