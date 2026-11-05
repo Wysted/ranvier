@@ -49,7 +49,7 @@ jobs:
           POSTGRES_PASSWORD: graph_agent
           POSTGRES_DB: graph_agent
         ports:
-          - 127.0.0.1:54329:5432
+          - 54329:5432
         options: >-
           --health-cmd "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"
           --health-interval 5s
@@ -72,8 +72,21 @@ jobs:
         run: uv run pytest -m integration -q -rs || [ $? -eq 5 ]
 
   install:
+    name: install (py${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # OD-7: same policy as the gate job.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.13"
+            experimental: false
+          - python: "3.14"
+            experimental: true
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

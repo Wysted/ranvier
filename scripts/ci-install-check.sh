@@ -18,8 +18,8 @@ fresh_venv() {
 
 # Member directories from [tool.uv.workspace].members (globs expanded, one per line).
 workspace_members() {
-    # uv-managed Python: the system python3 may predate tomllib (3.11).
-    uv run --no-project python -I - "$ROOT" <<'PY'
+    # A uv-resolved interpreter is >=3.13 (has tomllib); the system python3 may predate it.
+    "$(uv python find)" -I - "$ROOT" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
@@ -58,13 +58,19 @@ check_members() {
 }
 
 check_git_subdirectory() {
-    local sha py
+    local sha proj
     sha="$(git rev-parse HEAD)"
-    echo "==> git+file install of packages/core at $sha"
-    py="$(fresh_venv git-subdir)"
-    uv pip install --quiet --python "$py" \
-        "graph-agent @ git+file://$ROOT@$sha#subdirectory=packages/core"
-    "$py" -I -c "import graph_agent; print('imported', graph_agent.__name__)"
+    echo "==> git+file install of packages/core at $sha (as a product would: uv init, uv add, uv run)"
+    proj="$WORK/git-subdir"
+    mkdir "$proj"
+    (
+        cd "$proj"
+        # The throwaway product has no uv.lock: it must resolve (UV_FROZEN is for this repo's lock).
+        unset UV_FROZEN
+        uv init --bare --quiet
+        uv add --quiet "graph-agent @ git+file://$ROOT@$sha#subdirectory=packages/core"
+        uv run python -I -c "import graph_agent; print('imported', graph_agent.__name__)"
+    )
 }
 
 case "${1:-all}" in
