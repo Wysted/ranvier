@@ -457,7 +457,8 @@ def flow_context(
     models: Mapping[str, BaseChatModel] = ...,
     tools: Mapping[str, BaseTool] = ...,
     config: Mapping[str, Any] = ...,
-) -> FlowContext: ...
+    mcp: McpToolSource | None = None,  # R6: fake MCP source
+) -> FlowContext: ...  # sync-only tools run with isolation="thread", like a configured [tools.x]
 
 
 @dataclass(frozen=True)
@@ -477,7 +478,9 @@ async def run_flow(
 ) -> FlowResult: ...  # InMemorySaver, same runner mapping
 ```
 
-Testing a flow: build `flow_context(models={"fast": FakeChatModel([...])})`, call `run_flow`, assert on `values`; call again with the same `thread_id` and `resume=` to test interrupts.
+Testing a flow: build `flow_context(models={"fast": FakeChatModel([...])})`, call `run_flow`, assert on `values`; call again with the same `thread_id` and `resume=` to test interrupts. `input` and `resume` are exclusive. `resume` follows LangGraph's rule: a dict whose keys are all 32-hex interrupt ids (including `{}`) is an id map and must name only pending ids; any other value resumes the single pending interrupt. `run_flow` applies no run timeout (bound tests with `asyncio.timeout`).
+
+`graph_agent.testing` also re-exports the event types so tests outside `_internal` can assert on `FlowResult.events`: `RunEvent` (union), `MetadataEvent`, `UpdatesEvent`, `ValuesEvent`, `MessagesEvent`, `CustomEvent`, `InterruptEvent`, `InterruptItem`, `EndEvent`, `ErrorEvent`, `UsageTotals`.
 
 **Platform test layers:**
 
