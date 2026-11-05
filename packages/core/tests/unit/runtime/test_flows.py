@@ -141,7 +141,7 @@ async def test_concurrent_get_builds_once(user_module: Any) -> None:
     assert calls == 1 and all(r is results[0] for r in results)
 
 
-async def test_cancelled_build_does_not_poison_cache(user_module: Any) -> None:
+async def test_cancelled_waiter_does_not_cancel_shared_build(user_module: Any) -> None:
     started, release = asyncio.Event(), asyncio.Event()
     calls = 0
 
@@ -160,8 +160,28 @@ async def test_cancelled_build_does_not_poison_cache(user_module: Any) -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    release.set()  # the shared build outlives its cancelled waiter and is reused
     flow = await reg.get("f")
-    assert flow.name == "f" and calls == 2
+    assert flow.name == "f" and calls == 1
+
+
+async def test_concurrent_failed_gets_share_one_build_attempt(user_module: Any) -> None:
+    calls = 0
+
+    async def factory(ctx: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        raise RuntimeError("down")
+
+    user_module.t = factory
+    reg = _registry(f="t")
+    results = await asyncio.gather(*(reg.get("f") for _ in range(8)), return_exceptions=True)
+    assert calls == 1
+    assert all(isinstance(r, RunError) and r.retryable for r in results)
+    with pytest.raises(RunError):  # the failure was not cached: the next request retries
+        await reg.get("f")
+    assert calls == 2
 
 
 async def test_unknown_flow_and_version_check(user_module: Any) -> None:
@@ -176,3 +196,27 @@ async def test_unknown_flow_and_version_check(user_module: Any) -> None:
         check_version(flow, 2)
     assert ei.value.code == ErrorCode.FLOW_VERSION_MISMATCH
     assert "flows.f.version:" in ei.value.message
+
+
+async def test_concurrent_waiters_get_the_failure_and_a_cancelled_one_logs_nothing(
+    user_module: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    started = asyncio.Event()
+
+    async def factory(ctx: Any) -> Any:
+        started.set()
+        await asyncio.sleep(0.05)
+        raise RuntimeError("password=hunter2")
+
+    user_module.t = factory
+    reg = _registry(f="t")
+    cancelled = asyncio.create_task(reg.get("f"))
+    waiter = asyncio.create_task(reg.get("f"))
+    await started.wait()
+    cancelled.cancel()
+    with pytest.raises(RunError):
+        await waiter
+    await asyncio.sleep(0.05)
+    assert cancelled.cancelled()
+    assert not [r for r in caplog.records if r.name == "asyncio"]
+    assert "hunter2" not in caplog.text

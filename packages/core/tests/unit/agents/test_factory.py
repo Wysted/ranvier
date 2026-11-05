@@ -15,7 +15,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.types import Command, interrupt
 
-from fake_models import fake_model
 from graph_agent import as_tool
 from graph_agent._internal.agents.factory import AgentBuildError, build_agent
 from graph_agent._internal.agents.mcp import McpSourceError
@@ -25,10 +24,15 @@ from graph_agent._internal.config.manifest import LlmSettings, ToolSpec
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.llm import LlmRegistry
 from graph_agent._internal.usage import AGENT_METADATA_KEY
+from graph_agent.testing import FakeChatModel
 
 LIMIT_S = 0.05
 LONGER_THAN_LIMIT_S = 0.3
 SKILLS = Path(__file__).parent / "skills_fixtures"
+
+
+def fake_model(*messages: AIMessage) -> FakeChatModel:
+    return FakeChatModel(list(messages) or ["ok"])
 
 
 @tool

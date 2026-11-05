@@ -80,6 +80,11 @@ under old workers): `docker compose stop api worker && docker compose up -d --bu
   worker. Keep `limits.shutdown_grace_s` (90 s by default) above your longest tool, MCP or model call
   plus 5 s for the hand-over, and the orchestrator's stop grace period above
   `limits.shutdown_grace_s` (the compose file uses 105 s).
+- **Postgres connections.** Per process, worst case: API `5 + 10 + 1` (app + checkpointer +
+  Procrastinate pool, which only defers jobs); worker `5 + 10 + 5 + 3` (app + checkpointer +
+  Procrastinate pool, plus its LISTEN connection and the sweep and prune lock connections).
+  Pool sizes are `database.*_pool_max`. Keep the sum over all replicas below Postgres
+  `max_connections` (100 by default); each process logs its budget at startup.
 - **Health.** `GET /healthz` (liveness), `GET /readyz` (pools and event-loop lag).
 - **Ollama.** Containers cannot reach the host's Ollama at `localhost`. Set
   `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` (the ollama client reads it when the

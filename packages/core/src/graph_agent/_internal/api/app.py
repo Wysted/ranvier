@@ -22,6 +22,7 @@ from graph_agent._internal.api.routes import health, router
 from graph_agent._internal.bootstrap import Container, open_container
 from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.limits import graceful_wait_s
+from graph_agent._internal.queue import API_QUEUE_POOL_MAX
 from graph_agent._internal.runtime.runs import ErrorCode, RunError
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def create_app(settings: Settings) -> FastAPI:
         # First: may import the auth hook module (blocking I/O) and fails fast on a bad config
         # before any pool is opened.
         app.state.authenticator = await asyncio.to_thread(build_authenticator, settings.api)
-        async with open_container(settings) as container:
+        async with open_container(settings, queue_pool_max=API_QUEUE_POOL_MAX) as container:
             app.state.container = container
             yield
 

@@ -11,6 +11,7 @@ from typing import Any, TypedDict
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
@@ -21,7 +22,7 @@ from graph_agent._internal.db.pool import open_app_pool
 from graph_agent._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
 from graph_agent._internal.runtime.flows import FlowRegistry
 from graph_agent._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
-from graph_agent._internal.worker import run_worker
+from graph_agent._internal.worker import SWEEP_LOCK_KEY, run_worker
 from integration._resources import Resources
 
 MODULE = "t24_integration_flows"
@@ -70,6 +71,15 @@ def settings(clean_database: str) -> Settings:  # sync: reading the TOML source 
         database=DatabaseSettings(url=SecretStr(clean_database)),
         runs=RunsSettings(heartbeat_s=0.1, lease_s=2.0),
     )
+
+
+@pytest.fixture(autouse=True)
+async def _no_sweep(clean_database: str) -> AsyncIterator[None]:
+    """Hold the sweep lock: the sweep Procrastinate defers at startup (the last minute) would
+    re-defer runs these tests set up by hand. No test here exercises the sweep."""
+    async with await AsyncConnection.connect(clean_database) as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (SWEEP_LOCK_KEY,))
+        yield
 
 
 @pytest.fixture
@@ -181,12 +191,12 @@ async def test_same_thread_jobs_run_one_after_the_other(
     assert [attempts for _, attempts in jobs] == [1, 1]  # finish counts one: no thread_busy retries
 
 
-async def _until_retrying(pool: AsyncConnectionPool, job_index: int) -> None:
-    """Wait until the job is back to `todo` after at least one thread_busy retry."""
+async def _until_retrying(pool: AsyncConnectionPool, job_index: int, above: int = 0) -> None:
+    """Wait until the job is back to `todo` with more than `above` attempts."""
     async with asyncio.timeout(WAIT_S):
         while True:
             status, attempts = (await _jobs(pool))[job_index]
-            if status == "todo" and attempts >= 1:
+            if status == "todo" and attempts > above:
                 return
             await asyncio.sleep(POLL_S)
 
@@ -230,5 +240,10 @@ async def test_recovery_defer_is_not_blocked_by_a_retrying_thread_busy_job(
         if recovery:
             await _until(pool, r1, RunStatus.SUCCESS)
         else:
-            with pytest.raises(TimeoutError):  # documents the blocking this priority avoids
-                await _until(pool, r1, RunStatus.SUCCESS)
+            # Documents the blocking this priority avoids: R2's job keeps retrying (back to
+            # `todo` with more attempts) while R1's job, deferred after it, never gets fetched.
+            seen = (await _jobs(pool))[0][1]
+            await _until_retrying(pool, 0, above=seen)
+            _, r1_job = (await _jobs(pool))[:2]
+            assert r1_job[0] == "todo"
+            assert await _status(pool, r1) == RunStatus.RUNNING

@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import START, MessagesState
-from langgraph.graph.state import CompiledStateGraph, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
+from graph_agent._internal.agents.factory import AgentBuildError, build_agent
 from graph_agent._internal.agents.mcp import McpSourceError, resolve_headers
+from graph_agent._internal.agents.skills import SkillError
 from graph_agent._internal.agents.spec import AgentSpec
 from graph_agent._internal.agents.tools import ToolConfigError, ToolRegistry
 from graph_agent._internal.config.manifest import TargetImportError
@@ -39,6 +40,13 @@ class Problem:
     def __str__(self) -> str:
         # Build errors already lead with their key: do not repeat it.
         return self.message if self.message.startswith(self.key) else f"{self.key}: {self.message}"
+
+
+class _NoMcp:
+    """Validation never connects to MCP: every server offers no tools."""
+
+    async def tools(self, server: str) -> list[BaseTool]:
+        return []
 
 
 @dataclass(slots=True)  # not frozen: FlowContext declares settable attributes
@@ -80,21 +88,22 @@ class _ValidationContext:
         return found
 
     async def agent(self, spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]:
-        self._check_profile(spec.profile)
-        self.tools(*(t for t in spec.tools if isinstance(t, str)))
-        try:  # tool objects take the real wrapping path; names were checked above
-            self.registry.resolve([t for t in spec.tools if not isinstance(t, str)])
-        except ToolConfigError as exc:
-            self._note(str(exc))
         for server in spec.mcp_servers:
             if server not in self.settings.mcp.servers:
                 self._note(f"unknown MCP server {server!r}; add [mcp.servers.{server}]")
-        # shortcut: a one-node stand-in, no create_agent; build the real agent offline once the
-        # agent factory (T30) exists.
-        builder = StateGraph(MessagesState)
-        builder.add_node("agent", lambda state: {})
-        builder.add_edge(START, "agent")
-        return builder.compile(name=spec.name)
+        # Unknown names are noted and failing ones are reported under tools.<name>; the rest (and
+        # tool objects) go through the real `build_agent`, which resolves them itself.
+        self.tools(*(t for t in spec.tools if isinstance(t, str)))
+        buildable = [t for t in spec.tools if not isinstance(t, str) or t in self.tool_cache]
+        # Resolved first: `build_agent` raises on a collision before it looks at the model, which
+        # would hide an unknown profile. `model` notes it and yields a fake offline; no MCP.
+        model = self.model(spec.profile)
+        return await build_agent(
+            replace(spec, tools=buildable),
+            models=lambda _p: model,
+            registry=self.registry,
+            mcp=_NoMcp(),
+        )
 
 
 def _describe(exc: BaseException) -> str:
@@ -109,8 +118,10 @@ def _build_problem(name: str, exc: RunError) -> Problem:
     if cause is None:  # our own message (wrong kind, compiled graph)
         return Problem(f"flows.{name}", exc.message)
     key = f"flows.{name}.target"
-    # TargetImportError text is ours; any other user exception is described without its values.
-    return Problem(key, str(cause) if isinstance(cause, TargetImportError) else _describe(cause))
+    # These texts are ours (names and paths, no values); any other user exception is described
+    # without its values.
+    ours = (TargetImportError, AgentBuildError, SkillError, ToolConfigError)
+    return Problem(key, str(cause) if isinstance(cause, ours) else _describe(cause))
 
 
 async def validate_manifest(

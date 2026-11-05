@@ -225,13 +225,17 @@ ORDER BY created_at, run_id
 
 # A thread is idle when none of its runs is pending or running and the last one ended (or, for
 # a run that never finished, was created) before the cutoff. `idle` is the age of that last
-# activity, measured by the database clock.
+# activity, measured by the database clock. Only threads in the prune window (idle for `idle_for`
+# up to `idle_for + window`) or past `delete_after` come back: an older thread was already pruned
+# a few times and is left alone until its whole-thread delete.
 _IDLE_THREADS: LiteralString = """
 SELECT thread_id, now() - max(COALESCE(finished_at, created_at)) AS idle
 FROM graph_agent.runs
 GROUP BY thread_id
 HAVING bool_and(status NOT IN ('pending', 'running'))
-   AND max(COALESCE(finished_at, created_at)) < now() - %s
+   AND max(COALESCE(finished_at, created_at)) < now() - %(idle_for)s
+   AND (max(COALESCE(finished_at, created_at)) >= now() - %(idle_for)s - %(window)s
+        OR max(COALESCE(finished_at, created_at)) < now() - %(delete_after)s)
 ORDER BY thread_id
 """
 
@@ -442,10 +446,15 @@ class RunsRepository:
         rows = await self._fetch(_STALE_PENDING, (older_than_s,))
         return [(r["run_id"], r["thread_id"]) for r in rows]
 
-    async def idle_threads(self, idle_for: timedelta) -> list[tuple[uuid.UUID, timedelta]]:
-        """Threads with no pending or running run whose last activity is older than `idle_for`,
-        with the age of that activity."""
-        rows = await self._fetch(_IDLE_THREADS, (idle_for,))
+    async def idle_threads(
+        self, idle_for: timedelta, *, window: timedelta, delete_after: timedelta
+    ) -> list[tuple[uuid.UUID, timedelta]]:
+        """Threads with no pending or running run whose last activity is older than `idle_for`
+        (but at most `idle_for + window`, unless older than `delete_after`), with the age of
+        that activity."""
+        rows = await self._fetch(
+            _IDLE_THREADS, {"idle_for": idle_for, "window": window, "delete_after": delete_after}
+        )
         return [(r["thread_id"], r["idle"]) for r in rows]
 
     async def thread_is_idle(self, thread_id: uuid.UUID, idle_for: timedelta) -> bool:
