@@ -13,8 +13,8 @@ from langgraph.graph import END, START, StateGraph
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.runtime.flows import (
     FLOW_BUILD_FAILED,
+    FLOW_NOT_FOUND,
     FLOW_VERSION_MISMATCH,
-    FlowNotFoundError,
     FlowRegistry,
     RunError,
     check_version,
@@ -65,12 +65,36 @@ async def test_builder_sync_and_async_factory(user_module: Any) -> None:
         assert await flow.graph.ainvoke({"x": 1}, cfg) == {"x": 2}
 
 
-@pytest.mark.parametrize("kind", ["compiled", "other"])
-async def test_bad_target_is_loud_and_not_retryable(user_module: Any, kind: str) -> None:
-    user_module.t = _builder().compile() if kind == "compiled" else 42
+@pytest.mark.parametrize("kind", ["compiled", "factory_compiled", "other"])
+async def test_bad_target_is_loud_and_retryable(user_module: Any, kind: str) -> None:
+    user_module.t = {
+        "compiled": _builder().compile(),
+        "factory_compiled": lambda ctx: _builder().compile(),
+        "other": 42,
+    }[kind]
     with pytest.raises(RunError, match=r"flows\.f\.target") as ei:
         await _registry(f="t").get("f")
-    assert ei.value.code == FLOW_BUILD_FAILED and not ei.value.retryable
+    assert ei.value.code == FLOW_BUILD_FAILED and ei.value.retryable
+    if kind != "other":
+        assert "uncompiled StateGraph" in ei.value.message
+
+
+@pytest.fixture
+def cfg_file(tmp_path: Any) -> Any:
+    f = tmp_path / "cfg.txt"
+    f.write_text("x")
+    return f
+
+
+async def test_sync_factory_io_runs_off_the_loop(user_module: Any, cfg_file: Any) -> None:
+    f = cfg_file
+
+    def factory(ctx: Any) -> Any:
+        f.read_text()  # blockbuster raises if this runs on the event loop
+        return _builder()
+
+    user_module.t = factory
+    await _registry(f="t").get("f")
 
 
 async def test_failed_build_not_cached_then_succeeds(user_module: Any) -> None:
@@ -80,7 +104,7 @@ async def test_failed_build_not_cached_then_succeeds(user_module: Any) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise RuntimeError("boom")
+            raise RuntimeError("boom secret-token")
         return _builder()
 
     user_module.t = factory
@@ -88,6 +112,8 @@ async def test_failed_build_not_cached_then_succeeds(user_module: Any) -> None:
     with pytest.raises(RunError) as ei:
         await reg.get("f")
     assert ei.value.code == FLOW_BUILD_FAILED and ei.value.retryable
+    assert "flows.f.target" in ei.value.message and "RuntimeError" in ei.value.message
+    assert "secret-token" not in ei.value.message
     first = await reg.get("f")
     assert first is await reg.get("f") and calls == 2
 
@@ -104,7 +130,7 @@ async def test_concurrent_get_builds_once(user_module: Any) -> None:
     async def factory(ctx: Any) -> Any:
         nonlocal calls
         calls += 1
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
         return _builder()
 
     user_module.t = factory
@@ -113,13 +139,37 @@ async def test_concurrent_get_builds_once(user_module: Any) -> None:
     assert calls == 1 and all(r is results[0] for r in results)
 
 
+async def test_cancelled_build_does_not_poison_cache(user_module: Any) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def factory(ctx: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await release.wait()
+        return _builder()
+
+    user_module.t = factory
+    reg = _registry(f="t")
+    task = asyncio.create_task(reg.get("f"))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    flow = await reg.get("f")
+    assert flow.name == "f" and calls == 2
+
+
 async def test_unknown_flow_and_version_check(user_module: Any) -> None:
     user_module.t = _builder()
     reg = _registry(f="t")
-    with pytest.raises(FlowNotFoundError):
+    with pytest.raises(RunError) as nf:
         await reg.get("zzz")
+    assert nf.value.code == FLOW_NOT_FOUND and not nf.value.retryable
     flow = await reg.get("f")
     check_version(flow, 3)
     with pytest.raises(RunError) as ei:
         check_version(flow, 2)
-    assert ei.value.code == FLOW_VERSION_MISMATCH
+    assert ei.value.code == FLOW_VERSION_MISMATCH and "flows.f.version:" in ei.value.message
