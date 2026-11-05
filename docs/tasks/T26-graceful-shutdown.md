@@ -46,3 +46,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Depends on T23/T24, so the API and worker entry points exist; touch them minimally.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
 - From the T10 review (orchestrator): `Observability.shutdown()` blocks (up to ~2x10 s with the collector down): call it via `asyncio.to_thread` and count it inside `limits.shutdown_grace_s`.
+- From the T13 review (orchestrator decision, design §5): drain = repository call that sets `lease_expires_at = now()` and `attempt - 1` for this process's runs, then defer; never write `pending`.

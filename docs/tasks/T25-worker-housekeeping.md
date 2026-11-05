@@ -49,3 +49,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - This task, not T18, owns the Procrastinate step in `migrate` because `queue.py` did not exist yet in T18's wave (report).
 - Keep tasks in `worker.py` as small functions delegating to repositories.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T13 review (orchestrator decision, design §5): the sweep never writes `pending`. It (1) marks exhausted expired runs `error`, (2) re-defers expired running runs as they are, (3) re-defers `pending` runs older than `runs.pending_redefer_s`; dedupe via `queueing_lock=run_id`. From T11 review: `aprune`/`adelete_thread` exist on AsyncPostgresSaver (not on InMemorySaver); a long prune holds the saver lock — use a dedicated saver instance for pruning; never call the same saver inside its `alist` iteration.

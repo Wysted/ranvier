@@ -256,19 +256,19 @@ Invariant: partial unique index on `(thread_id) WHERE status = 'running'`: at mo
 | `running` | `success` / `error` | Graph finishes / raises or times out (`run_timeout`) |
 | `running` | `interrupted` | Stream reports interrupts; resuming is a new run on the thread |
 | `running` | `cancelled` | Heartbeat sees `cancel_requested`, or client disconnects from an inline run |
-| `running` | `pending` | Lease expired (orphan sweep) or graceful shutdown; a run is claimed at most `runs.max_attempts` times (sweep: `attempt >= max_attempts` goes to `error`, `orphan_retries_exhausted`); a graceful-shutdown drain gives the attempt back (`attempt - 1`), so deploys never exhaust retries |
+| `running` (lease expired) | `running` (new owner) | Recovery never writes `pending`: the sweep leaves the expired lease as is, a graceful-shutdown drain sets `lease_expires_at = now()` and gives the attempt back (`attempt - 1`, so deploys never exhaust retries); both defer `execute_run` and the next claim takes over. The claim enforces `attempt < runs.max_attempts` (a run is claimed at most `max_attempts` times); exhausted runs are moved to `error` (`orphan_retries_exhausted`) by the sweep; a run with `cancel_requested` is claimed straight into `cancelled` |
 
 ### Serialization, recovery and housekeeping
 
 | Mechanism | How |
 |-----------|-----|
-| Per-thread order (queued runs) | Procrastinate job `execute_run` deferred with `lock=thread_id` |
+| Per-thread order (queued runs) | Procrastinate job `execute_run` deferred with `lock=thread_id` and `queueing_lock=run_id` (at most one queued job per run; `AlreadyEnqueued` is ignored) |
 | Per-thread exclusion (all paths) | Partial unique index; inline run on a busy thread gets `409 thread_busy`; a queued job hitting it retries with backoff |
 | Stalled jobs | Periodic task (every minute): `job_manager.get_stalled_jobs()` then `retry_job()` (worker heartbeats) |
-| Orphan runs | Same periodic task: `running` runs with expired lease go back to `pending` and are deferred (covers API crashes of inline runs) |
+| Orphan runs | Same periodic task: `running` runs with an expired lease are re-deferred without a status change (covers API crashes of inline runs); `pending` runs older than `runs.pending_redefer_s` are re-deferred too (covers a crash between creating the row and deferring its job) |
 | Checkpoint growth | Periodic prune: `keep_latest` for threads idle more than `threads.ttl_days`, `delete_thread` past a second TTL |
 
-Claims make both recovery paths idempotent: the job that loses the claim exits.
+Claims make both recovery paths idempotent: the job that loses the claim exits. Fencing: the repository generates a fresh lease token on every claim (`<owner>:<uuid>`), stores it in `lease_owner` and returns it; heartbeat and finish are fenced on that token, never on a caller-chosen worker id.
 
 ### Interrupts, cancellation, idempotency
 
@@ -378,7 +378,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | Run timeout | `asyncio.timeout` around the stream; error `run_timeout` | `flows.<f>.timeout_s` (600) |
 | Node timeout | Native LangGraph 1.2 `add_node(..., timeout=TimeoutPolicy(...))` (async nodes) and `error_handler=` for compensation; the platform does not wrap nodes, the starter documents the pattern | set in the flow |
 | Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); put drained runs back to `pending` and defer them; the requeued attempt resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
-| Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup | `database.*_pool_max` (5, 10, 5) |
+| Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup. `AsyncPostgresSaver` takes a per-instance `asyncio.Lock` on every DB call (reads included; langgraph-checkpoint-postgres 3.2.0, issue #7259): the platform's saver subclass replaces it with a semaphore sized to the pool when built over a pool (each call gets its own pooled connection), `shortcut:` until upstream fixes it | `database.*_pool_max` (5, 10, 5) |
 | Loop health | Lag sampler (sleep drift every 1 s): gauge, warning over threshold, `/readyz` | `limits.loop_lag_warn_ms` (100) |
 | Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another, except that a transport failure after an MCP response started fails every in-flight call on that MCP server (each an error `ToolMessage`; the next call reconnects; mcp 2.3.0, python-sdk #1393, S2); supersteps are transactional | none |
 | Blocking-call detection | `blockbuster` in the platform CI and in the starter CI | none |

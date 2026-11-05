@@ -52,3 +52,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Port the stream mapping and interrupt-by-id resume from `/home/wysted/code/agintis/src/agintis/agent_kit/runtime/langgraph_runner.py`.
 - Sync/blocking work must not run on the loop (blockbuster is on in tests).
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T13 review (orchestrator decision, design §5): use the lease token returned by `claim` for heartbeat/finish; a claim may return the run as `cancelled` when `cancel_requested` was set.

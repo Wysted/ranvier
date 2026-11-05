@@ -45,3 +45,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Contract C4: `procrastinate` imported only in `queue` and `worker`.
 - Worker processes build their own container; do not share objects with the API process.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T13 review (orchestrator decision, design §5): defer `execute_run` with `lock=thread_id` and `queueing_lock=run_id`, ignoring `AlreadyEnqueued`.
