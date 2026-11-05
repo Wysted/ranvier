@@ -1,0 +1,338 @@
+"""Runs repository over `graph_agent.runs` (design section 5).
+
+Raw SQL, one statement per operation. Every lease time comes from the database clock (`now()`).
+After the claim, each mutation is fenced on `lease_owner` and `status = 'running'`, so an owner
+that lost its lease (sweep, drain, takeover) can never write a terminal state: the call returns
+`False` / `None` and the caller must stop.
+"""
+
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from typing import Any, Final, LiteralString, Self
+
+from psycopg import errors
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
+
+DEFAULT_LIST_LIMIT: Final = 50
+
+
+class RunStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
+    INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
+
+
+class ErrorCode(StrEnum):
+    """Error codes shared by the runner, the sweep and the HTTP DTOs (T21 maps them to statuses)."""
+
+    RUN_TIMEOUT = "run_timeout"
+    FLOW_BUILD_FAILED = "flow_build_failed"
+    FLOW_VERSION_MISMATCH = "flow_version_mismatch"
+    THREAD_BUSY = "thread_busy"
+    THREAD_INTERRUPTED = "thread_interrupted"
+    TOO_MANY_RUNS = "too_many_runs"
+    ORPHAN_RETRIES_EXHAUSTED = "orphan_retries_exhausted"
+    INTERNAL_ERROR = "internal_error"
+
+
+class RunError(Exception):
+    """`{code, message, retryable}`: the stored `runs.error` value and the HTTP error body."""
+
+    def __init__(self, code: ErrorCode, message: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+    def as_dict(self) -> dict[str, object]:
+        return {"code": self.code.value, "message": self.message, "retryable": self.retryable}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Self:
+        return cls(ErrorCode(data["code"]), data["message"], data["retryable"])
+
+
+_TERMINAL: Final = frozenset(
+    {RunStatus.SUCCESS, RunStatus.ERROR, RunStatus.INTERRUPTED, RunStatus.CANCELLED}
+)
+_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
+    RunStatus.PENDING: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
+    RunStatus.RUNNING: _TERMINAL | {RunStatus.PENDING},
+    **{status: frozenset[RunStatus]() for status in _TERMINAL},
+}
+
+
+def can_transition(source: RunStatus, target: RunStatus) -> bool:
+    """The design section 5 "Transitions" table."""
+    return target in _TRANSITIONS[source]
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    run_id: uuid.UUID
+    thread_id: uuid.UUID
+    flow: str
+    flow_version: int
+    tenant_id: str | None
+    status: RunStatus
+    input: object | None
+    command: object | None
+    error: RunError | None
+    attempt: int
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    cancel_requested: bool
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    metadata: dict[str, Any]
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> Self:
+        error = row["error"]
+        return cls(
+            **{
+                **row,
+                "status": RunStatus(row["status"]),
+                "error": None if error is None else RunError.from_dict(error),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadPin:
+    """What the first run of a thread fixed for the rest of its life."""
+
+    flow: str
+    flow_version: int
+    tenant_id: str | None
+
+
+class ClaimOutcome(StrEnum):
+    CLAIMED = "claimed"
+    LOST = "lost"  # another executor owns the run, or it is already terminal
+    THREAD_BUSY = "thread_busy"  # another run of the thread is running
+
+
+@dataclass(frozen=True, slots=True)
+class Claim:
+    outcome: ClaimOutcome
+    run: Run | None = None  # set only when CLAIMED
+
+
+@dataclass(frozen=True, slots=True)
+class Requeued:
+    pending: list[uuid.UUID]  # back to pending: the caller defers them again
+    exhausted: list[uuid.UUID]  # moved to error / orphan_retries_exhausted
+
+
+_COLUMNS: LiteralString = """run_id, thread_id, flow, flow_version, tenant_id, status, input,
+    command, error, attempt, lease_owner, lease_expires_at, cancel_requested, created_at,
+    started_at, finished_at, metadata"""
+
+_INSERT: LiteralString = f"""
+INSERT INTO graph_agent.runs
+    (run_id, thread_id, flow, flow_version, tenant_id, status, input, command, metadata)
+VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s)
+RETURNING {_COLUMNS}
+"""
+
+_CLAIM: LiteralString = f"""
+UPDATE graph_agent.runs
+SET status = 'running', lease_owner = %(owner)s,
+    lease_expires_at = now() + make_interval(secs => %(lease_s)s::float8),
+    attempt = attempt + 1, started_at = COALESCE(started_at, now())
+WHERE run_id = %(run_id)s
+  AND (status = 'pending' OR (status = 'running' AND lease_expires_at < now()))
+RETURNING {_COLUMNS}
+"""
+
+_HEARTBEAT: LiteralString = """
+UPDATE graph_agent.runs
+SET lease_expires_at = now() + make_interval(secs => %(lease_s)s::float8)
+WHERE run_id = %(run_id)s AND lease_owner = %(owner)s AND status = 'running'
+RETURNING cancel_requested
+"""
+
+_FINISH: LiteralString = """
+UPDATE graph_agent.runs
+SET status = %(status)s, error = %(error)s, finished_at = now(),
+    lease_owner = NULL, lease_expires_at = NULL
+WHERE run_id = %(run_id)s AND lease_owner = %(owner)s AND status = 'running'
+RETURNING run_id
+"""
+
+# A pending run is cancelled in the row; a running one only gets the flag (read by the heartbeat).
+_REQUEST_CANCEL: LiteralString = """
+UPDATE graph_agent.runs
+SET cancel_requested = true,
+    status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END,
+    finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END
+WHERE run_id = %(run_id)s AND status IN ('pending', 'running')
+RETURNING status
+"""
+
+# A drain is not a failure, so it gives the attempt back.
+_REQUEUE: LiteralString = """
+UPDATE graph_agent.runs
+SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
+    attempt = GREATEST(attempt - 1, 0)
+WHERE run_id = %(run_id)s AND lease_owner = %(owner)s AND status = 'running'
+RETURNING run_id
+"""
+
+# `attempt` counts claims, so a run is claimed at most `max_attempts` times.
+_REQUEUE_EXPIRED: LiteralString = """
+UPDATE graph_agent.runs
+SET status = CASE WHEN attempt >= %(max_attempts)s THEN 'error' ELSE 'pending' END,
+    error = CASE WHEN attempt >= %(max_attempts)s THEN %(error)s ELSE error END,
+    finished_at = CASE WHEN attempt >= %(max_attempts)s THEN now() ELSE finished_at END,
+    lease_owner = NULL, lease_expires_at = NULL
+WHERE status = 'running' AND lease_expires_at < now()
+RETURNING run_id, status
+"""
+
+
+class RunsRepository:
+    def __init__(self, pool: AsyncConnectionPool) -> None:
+        self._pool = pool
+
+    async def _fetch(
+        self, query: LiteralString, params: dict[str, Any] | tuple[Any, ...]
+    ) -> list[dict[str, Any]]:
+        # Each call is one implicit transaction on a pooled connection; no session state changes.
+        async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(query, params)
+            return await cur.fetchall()
+
+    async def create(
+        self,
+        *,
+        thread_id: uuid.UUID,
+        flow: str,
+        flow_version: int,
+        tenant_id: str | None = None,
+        input: object | None = None,
+        command: object | None = None,
+        metadata: dict[str, Any] | None = None,
+        run_id: uuid.UUID | None = None,
+    ) -> Run:
+        """Insert a `pending` run. The schema enforces exactly one of `input` / `command`."""
+        rows = await self._fetch(
+            _INSERT,
+            (
+                run_id or uuid.uuid4(),
+                thread_id,
+                flow,
+                flow_version,
+                tenant_id,
+                None if input is None else Jsonb(input),
+                None if command is None else Jsonb(command),
+                Jsonb(metadata or {}),
+            ),
+        )
+        return Run.from_row(rows[0])
+
+    async def get(self, run_id: uuid.UUID) -> Run | None:
+        rows = await self._fetch(
+            f"SELECT {_COLUMNS} FROM graph_agent.runs WHERE run_id = %s", (run_id,)
+        )
+        return Run.from_row(rows[0]) if rows else None
+
+    async def list_for_thread(
+        self, thread_id: uuid.UUID, limit: int = DEFAULT_LIST_LIMIT
+    ) -> list[Run]:
+        """Newest first."""
+        rows = await self._fetch(
+            f"SELECT {_COLUMNS} FROM graph_agent.runs WHERE thread_id = %s "
+            "ORDER BY created_at DESC, run_id DESC LIMIT %s",
+            (thread_id, limit),
+        )
+        return [Run.from_row(r) for r in rows]
+
+    async def thread_pin(self, thread_id: uuid.UUID) -> ThreadPin | None:
+        """Flow, version and tenant of the thread's first run; None for an unknown thread."""
+        rows = await self._fetch(
+            "SELECT flow, flow_version, tenant_id FROM graph_agent.runs WHERE thread_id = %s "
+            "ORDER BY created_at, run_id LIMIT 1",
+            (thread_id,),
+        )
+        return ThreadPin(**rows[0]) if rows else None
+
+    async def claim(self, run_id: uuid.UUID, owner: str, lease_s: float) -> Claim:
+        """Atomically take a pending run, or a running one whose lease expired."""
+        try:
+            rows = await self._fetch(_CLAIM, {"run_id": run_id, "owner": owner, "lease_s": lease_s})
+        except errors.UniqueViolation:
+            # Only `runs_one_running_per_thread` can fire on this UPDATE.
+            return Claim(ClaimOutcome.THREAD_BUSY)
+        if not rows:
+            return Claim(ClaimOutcome.LOST)
+        return Claim(ClaimOutcome.CLAIMED, Run.from_row(rows[0]))
+
+    async def heartbeat(self, run_id: uuid.UUID, owner: str, lease_s: float) -> bool | None:
+        """Extend the lease. Returns `cancel_requested`, or None if the lease is lost."""
+        rows = await self._fetch(_HEARTBEAT, {"run_id": run_id, "owner": owner, "lease_s": lease_s})
+        return rows[0]["cancel_requested"] if rows else None
+
+    async def finish(
+        self, run_id: uuid.UUID, owner: str, status: RunStatus, error: RunError | None = None
+    ) -> bool:
+        """Write a terminal state. False means the lease was lost and nothing was written."""
+        if not can_transition(RunStatus.RUNNING, status) or status is RunStatus.PENDING:
+            raise ValueError(f"not a terminal status: {status}")
+        rows = await self._fetch(
+            _FINISH,
+            {
+                "run_id": run_id,
+                "owner": owner,
+                "status": status.value,
+                "error": None if error is None else Jsonb(error.as_dict()),
+            },
+        )
+        return bool(rows)
+
+    async def request_cancel(self, run_id: uuid.UUID) -> RunStatus | None:
+        """Cancel a pending run now, or flag a running one. None if unknown or already terminal."""
+        rows = await self._fetch(_REQUEST_CANCEL, {"run_id": run_id})
+        return RunStatus(rows[0]["status"]) if rows else None
+
+    async def requeue(self, run_id: uuid.UUID, owner: str) -> bool:
+        """Graceful drain: give the run back to `pending`. False if the lease was lost."""
+        return bool(await self._fetch(_REQUEUE, {"run_id": run_id, "owner": owner}))
+
+    async def requeue_expired(self, max_attempts: int) -> Requeued:
+        """Orphan sweep: expired `running` runs go to `pending`, or to `error` when exhausted."""
+        error = RunError(
+            ErrorCode.ORPHAN_RETRIES_EXHAUSTED,
+            f"run lost its lease {max_attempts} times",
+            retryable=False,
+        )
+        rows = await self._fetch(
+            _REQUEUE_EXPIRED, {"max_attempts": max_attempts, "error": Jsonb(error.as_dict())}
+        )
+        out = Requeued(pending=[], exhausted=[])
+        for row in rows:
+            target = out.pending if row["status"] == RunStatus.PENDING else out.exhausted
+            target.append(row["run_id"])
+        return out
+
+    async def delete_thread(self, thread_id: uuid.UUID) -> int:
+        """Delete the thread's runs; refused (`thread_busy`) while one is running."""
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            # Row locks make a concurrent claim wait, then find nothing to claim.
+            await cur.execute(
+                "SELECT status FROM graph_agent.runs WHERE thread_id = %s FOR UPDATE",
+                (thread_id,),
+            )
+            if any(status == RunStatus.RUNNING for (status,) in await cur.fetchall()):
+                raise RunError(ErrorCode.THREAD_BUSY, "thread has a running run", retryable=True)
+            await cur.execute("DELETE FROM graph_agent.runs WHERE thread_id = %s", (thread_id,))
+            return cur.rowcount
