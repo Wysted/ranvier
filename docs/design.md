@@ -366,7 +366,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | MCP server | Semaphore + `asyncio.timeout` per server in the MCP port | `mcp.servers.<s>.max_concurrency`, `timeout_s` |
 | Tool | Semaphore + `asyncio.timeout` per tool in the registry wrapper | `tools.<t>.*`, `limits.tool_timeout_s` (30) |
 | Sync tools and sync nodes | Bounded `ThreadPoolExecutor` installed with `loop.set_default_executor` | `limits.sync_threads` (16) |
-| CPU-heavy tools | `isolation = "process"`: `ProcessPoolExecutor` (forkserver), timeout recycles the pool (`kill_workers`, 3.14) | `limits.cpu_workers` (2) |
+| CPU-heavy tools | `isolation = "process"`: `limits.cpu_workers` single-worker `ProcessPoolExecutor`s (explicit forkserver context), one call per slot; a timeout, caller cancellation or worker crash replaces only that slot's executor and kills its worker (`kill_workers` on 3.14, a backport over the private `_processes` on 3.13), so CPU calls of other runs are unaffected (S5) | `limits.cpu_workers` (2) |
 | Run timeout | `asyncio.timeout` around the stream; error `run_timeout` | `flows.<f>.timeout_s` (600) |
 | Node timeout | Native LangGraph 1.2 `add_node(..., timeout=TimeoutPolicy(...))` (async nodes) and `error_handler=` for compensation; the platform does not wrap nodes, the starter documents the pattern | set in the flow |
 | Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); put drained runs back to `pending` and defer them; the requeued attempt resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
@@ -522,9 +522,8 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
 | `uv add "git+...@tag#subdirectory=packages/core"` works | Distribution |
 | `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |
-| `ProcessPoolExecutor.kill_workers` behavior on 3.14; fallback on 3.13 | CPU tool timeout |
 | Studio via `langgraph dev` can load a shim that builds factories with a dev `FlowContext` | Dev experience |
-| langgraph on 3.14 (classifiers stop at 3.13; CI tests 3.14) | Runtime image |
+| langgraph on 3.14: S5 passed with langgraph 1.2.19 / checkpoint-postgres 3.2.0 (classifiers still stop at 3.13; CI keeps testing 3.14 on every bump) | Runtime image |
 | Lease expiry while the owner is alive (event-loop stall) cannot double-run: the sweep only requeues if the conditional claim wins and the partial unique index holds | Never run a thread twice |
 
 ## Resolved decisions (2026-11-04)
@@ -539,7 +538,7 @@ All eight were resolved by adopting the resolution below. OD-1 was confirmed by 
 | OD-4 | Default durability | (a) `sync` default, `async`/`exit` per flow; (b) `async` default (performance report) | (a): the platform report ties recovery of side-effect flows to `sync`; flows without effects opt into `async` |
 | OD-5 | Migrations for own tables | (a) Numbered SQL files + ~60-line runner; (b) Alembic + SQLAlchemy Core (agintis) | (a): two tables do not justify SQLAlchemy and Alembic as runtime dependencies of every product |
 | OD-6 | Config file format | (a) One `graph-agent.toml` (manifest, profiles, MCP, limits); (b) TOML manifest + YAML profiles (brief, agintis); (c) manifest in `pyproject.toml` `[tool.graph-agent]` (platform report) | (a): one file, stdlib `tomllib`, no PyYAML; runtime config does not belong in packaging metadata |
-| OD-7 | Python floor | (a) `>=3.13`, images on 3.14.5+; (b) `>=3.14` | (a) until langgraph classifies 3.14; then (b), which also guarantees `kill_workers` |
+| OD-7 | Python floor | (a) `>=3.13`, images on 3.14.5+; (b) `>=3.14` | (a) until langgraph classifies 3.14; then (b), which also removes the 3.13 `_processes` backport in `limits.py` |
 | OD-8 | Token streaming | (a) Opt-in per request via `stream_mode` `messages` (client filters by `node`); (b) opt-in per model via a tag (agintis `streamed()`) | (a): no platform helper, LangGraph vocabulary; add a tag filter only if bandwidth becomes a problem |
 
 ## Refinements from the task breakdown (2026-11-04)
