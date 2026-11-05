@@ -11,11 +11,11 @@ import math
 import os
 import socket
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Coroutine, Iterator, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Iterator, Sequence
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphDrained
@@ -53,7 +53,7 @@ from graph_agent._internal.usage import Counts, UsageCallback
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_STREAM_MODES: Final = ("updates", "custom")
+DEFAULT_STREAM_MODES: Final[tuple[Literal["updates", "custom"], ...]] = ("updates", "custom")
 # `updates` is always requested from LangGraph (interrupts arrive as `updates.__interrupt__`);
 # events are filtered to what the client asked for afterwards.
 _MODE_OF_EVENT: Final[dict[type, str]] = {
@@ -75,11 +75,38 @@ class RunQueue(Protocol):
 
 
 class ActiveRuns:
-    """Controls of the attempts in flight in this process: the shutdown drain (T26) reaches them."""
+    """Controls of the attempts in flight in this process: the shutdown drain (T26) reaches them.
+
+    Also tracks every run from its claim until its cleanup finished (`settled`), including the
+    detached cleanup tasks that outlive a cancelled consumer.
+    """
 
     def __init__(self) -> None:
         self._controls: set[RunControl] = set()
+        self._busy: set[object] = set()  # attempts and cleanup tasks (strong refs)
+        self._idle = asyncio.Event()
+        self._idle.set()
         self.draining = False
+
+    def begin(self, item: object) -> None:
+        self._busy.add(item)
+        self._idle.clear()
+
+    def end(self, item: object) -> None:
+        self._busy.discard(item)
+        if not self._busy:
+            self._idle.set()
+
+    def spawn(self, coro: Coroutine[Any, Any, Any]) -> "asyncio.Task[Any]":
+        """Run `coro` as a tracked task with a strong reference (the loop keeps only weak ones)."""
+        task = asyncio.create_task(coro)
+        self.begin(task)
+        task.add_done_callback(self.end)
+        return task
+
+    async def settled(self) -> None:
+        """Wait until every tracked run and cleanup finished (T26: before closing the pools)."""
+        await self._idle.wait()
 
     @contextmanager
     def track(self) -> Iterator[RunControl]:
@@ -196,7 +223,7 @@ class _StopReason(StrEnum):
     LOST = "lost"  # the lease is gone: another executor owns the run
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _Attempt:
     """Mutable state shared by the consumer, the pump and the heartbeat of one attempt."""
 
@@ -209,10 +236,6 @@ class _Attempt:
         self.reason = reason
         if self.pump is not None:
             self.pump.cancel()
-
-
-# Strong references: the event loop only keeps weak ones to tasks.
-_CLEANUPS: set["asyncio.Task[None]"] = set()
 
 
 async def execute_run(
@@ -259,6 +282,7 @@ async def execute_run(
 
     usage = UsageCallback()  # per attempt: attempts accumulate in the ledger
     attempt = _Attempt()
+    container.active_runs.begin(attempt)
     beat = asyncio.create_task(
         _heartbeat(runs, run, token, container, attempt, claimed_at), name=f"beat-{run_id}"
     )
@@ -268,8 +292,11 @@ async def execute_run(
             check_version(flow, run.flow_version)
         except RunError as flow_error:  # flow_not_found, flow_build_failed, flow_version_mismatch
             await _stop_tasks(beat)
-            ok = await _finish(container, ctx, token, RunStatus.ERROR, usage, flow_error)
-            attempt.settled = True
+            ok = await _settle(
+                container,
+                attempt,
+                _finish(container, runs, ctx, token, RunStatus.ERROR, usage, flow_error),
+            )
             if ok:
                 yield metadata_event(ctx)
                 yield _error_event(flow_error)
@@ -316,32 +343,40 @@ async def execute_run(
             await _stop_tasks(beat)  # no lease extension after the stream ended
             await asyncio.wait({pump})
 
-        if pump.cancelled():  # only the heartbeat cancels the pump while we are listening
+        if pump.cancelled():  # the heartbeat, or a node that propagated its own CancelledError
             if attempt.reason is _StopReason.CANCEL:
-                ok = await _finish(container, ctx, token, RunStatus.CANCELLED, usage)
-                attempt.settled = True
+                ok = await _settle(
+                    container,
+                    attempt,
+                    _finish(container, runs, ctx, token, RunStatus.CANCELLED, usage),
+                )
                 if ok:
                     yield EndEvent(RunStatus.CANCELLED.value, _totals(usage.totals()))
                 return
-            logger.warning("run %s: lease lost, stopping without a terminal write", run_id)
-            await _notify(container, ctx, RunStatus.RUNNING, usage)
-            attempt.settled = True
-            yield _error_event(RunError(ErrorCode.INTERNAL_ERROR, "run lease lost", retryable=True))
-            return
-        failure = pump.exception()
+            if attempt.reason is _StopReason.LOST:
+                logger.warning("run %s: lease lost, stopping without a terminal write", run_id)
+                await _settle(container, attempt, _notify(container, ctx, RunStatus.RUNNING, usage))
+                yield _error_event(
+                    RunError(ErrorCode.INTERNAL_ERROR, "run lease lost", retryable=True)
+                )
+                return
+            failure: BaseException | None = asyncio.CancelledError()
+        else:
+            failure = pump.exception()
 
         if failure is None:
             if end is None:  # stream_graph always ends with an `end` event
                 raise RuntimeError(f"run {run_id}: the stream ended without an end event")
-            ok = await _finish(container, ctx, token, RunStatus(end.status), usage)
-            attempt.settled = True
+            ok = await _settle(
+                container,
+                attempt,
+                _finish(container, runs, ctx, token, RunStatus(end.status), usage),
+            )
             if ok:
                 yield end
             return
         if isinstance(failure, GraphDrained):  # a GraphBubbleUp, not a failure: hand the run over
-            await _drain(runs, container.queue, run, token)
-            await _notify(container, ctx, RunStatus.RUNNING, usage)
-            attempt.settled = True
+            await _settle(container, attempt, _hand_over(container, runs, run, ctx, token, usage))
             return
         if attempt.timed_out:
             error = RunError(
@@ -351,14 +386,17 @@ async def execute_run(
             # Client message: exception type only (user exceptions may carry secrets).
             logger.error("run %s failed", run_id, exc_info=failure)
             error = RunError(ErrorCode.INTERNAL_ERROR, type(failure).__name__, retryable=False)
-        ok = await _finish(container, ctx, token, RunStatus.ERROR, usage, error)
-        attempt.settled = True
+        ok = await _settle(
+            container, attempt, _finish(container, runs, ctx, token, RunStatus.ERROR, usage, error)
+        )
         if ok:
             yield _error_event(error)
     except BaseException as exc:
         # Client gone (GeneratorExit), executor cancelled, or a bug/infrastructure failure.
         if not attempt.settled:
             cancelled = isinstance(exc, (GeneratorExit, asyncio.CancelledError))
+            # A deploy/SIGTERM cancels the executor: hand the run over instead of cancelling it.
+            drain = isinstance(exc, asyncio.CancelledError) and container.active_runs.draining
             if cancelled:
                 status, error = RunStatus.CANCELLED, None
             else:
@@ -366,12 +404,14 @@ async def execute_run(
                 status = RunStatus.ERROR
                 error = RunError(ErrorCode.INTERNAL_ERROR, type(exc).__name__, retryable=False)
             tasks = (beat,) if attempt.pump is None else (attempt.pump, beat)
-            await _shielded(_abort(container, ctx, token, status, usage, error, tasks))
+            abort = _abort(container, runs, run, ctx, token, status, usage, error, tasks, drain)
+            await _shielded(container.active_runs, abort)
         raise
     finally:
         beat.cancel()
         if attempt.pump is not None:
             attempt.pump.cancel()
+        container.active_runs.end(attempt)
 
 
 async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
@@ -388,18 +428,20 @@ async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
 
 
 async def _pump(
-    stream: AsyncIterator[RunEvent],
+    stream: AsyncGenerator[RunEvent],
     queue: "asyncio.Queue[RunEvent]",
     timeout_s: float,
     attempt: _Attempt,
 ) -> None:
     """Drain the stream into the bounded queue under the run timeout.
 
-    A full queue blocks the stream (backpressure); that wait counts against the timeout.
+    A full queue blocks the stream (backpressure); that wait counts against the timeout. The
+    stream is closed here on every exit, so a cancel while blocked on the queue still stops the
+    graph's node tasks before the pump ends.
     """
     timeout = asyncio.timeout(timeout_s)
     try:
-        async with timeout:
+        async with timeout, aclosing(stream):
             async for event in stream:
                 await queue.put(event)
     finally:
@@ -423,19 +465,25 @@ async def _heartbeat(
     loop = asyncio.get_running_loop()
     last_ok = claimed_at
     while True:
-        await asyncio.sleep(cfg.heartbeat_s)
-        remaining = max(cfg.lease_s - (loop.time() - last_ok), 0.0)
+        remaining = cfg.lease_s - (loop.time() - last_ok)
+        delay = min(cfg.heartbeat_s, remaining)
+        await asyncio.sleep(max(delay, 0.0))
+        if delay >= remaining:  # nothing extended the lease for `lease_s`: it has expired
+            logger.warning("run %s: no heartbeat within the lease", run.run_id)
+            attempt.stop(_StopReason.LOST)
+            return
+        started = loop.time()  # the lease is extended from the call, not from its answer
         try:
-            async with asyncio.timeout(remaining):  # a hung call must not outlive the lease
+            async with asyncio.timeout_at(last_ok + cfg.lease_s):  # a hung call must not outlive it
                 cancel_requested = await runs.heartbeat(run.run_id, token, cfg.lease_s)
         except Exception as exc:
-            if isinstance(exc, TimeoutError) or loop.time() - last_ok >= cfg.lease_s:
-                logger.warning("run %s: no heartbeat within the lease", run.run_id, exc_info=True)
+            if isinstance(exc, TimeoutError):
+                logger.warning("run %s: heartbeat hung past the lease", run.run_id, exc_info=True)
                 attempt.stop(_StopReason.LOST)
                 return
             logger.warning("run %s: heartbeat failed", run.run_id, exc_info=True)
             continue
-        last_ok = loop.time()
+        last_ok = started
         if cancel_requested is None:
             attempt.stop(_StopReason.LOST)
             return
@@ -450,36 +498,47 @@ async def _stop_tasks(*tasks: "asyncio.Task[None]") -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _shielded(coro: Coroutine[Any, Any, None]) -> None:
-    """Run `coro` as its own task and wait for it, surviving cancellation of the caller.
+async def _shielded[T](active: ActiveRuns, coro: Coroutine[Any, Any, T]) -> T:
+    """Run `coro` as its own tracked task and wait for it, surviving cancellation of the caller.
 
     anyio/Starlette cancel every `await` of a cancelled scope again, so the cleanup cannot run in
-    the cancelled task itself: it lives on in `_CLEANUPS` even if this wait is cancelled again.
+    the cancelled task itself. A second cancel propagates; the cleanup keeps running.
     """
-    task = asyncio.create_task(coro)
-    _CLEANUPS.add(task)
-    task.add_done_callback(_CLEANUPS.discard)
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        logger.debug("cleanup wait cancelled again; the cleanup task keeps running")
+    return await asyncio.shield(active.spawn(coro))
+
+
+async def _settle[T](
+    container: RunnerResources, attempt: _Attempt, coro: Coroutine[Any, Any, T]
+) -> T:
+    """The attempt's terminal step (write + observers) in a shielded task.
+
+    `settled` is set first: a cancel from here on must not make the abort notify a second time.
+    """
+    attempt.settled = True
+    return await _shielded(container.active_runs, coro)
 
 
 async def _abort(
     container: RunnerResources,
+    runs: RunsRepository,
+    run: Run,
     ctx: RunContext,
     token: str,
     status: RunStatus,
     usage: UsageCallback,
     error: RunError | None,
     tasks: "tuple[asyncio.Task[None], ...]",
+    drain: bool,
 ) -> None:
-    """Stop the attempt's tasks, then record `cancelled`/`error`, within the shutdown budget."""
+    """Stop the attempt's tasks, then record `cancelled`/`error` (or hand the run over)."""
     deadline = container.shutdown_budget.deadline
     try:
         async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
             await _stop_tasks(*tasks)
-            await _finish(container, ctx, token, status, usage, error)
+            if drain:
+                await _hand_over(container, runs, run, ctx, token, usage)
+            else:
+                await _finish(container, runs, ctx, token, status, usage, error)
     except TimeoutError:
         logger.error(
             "run %s: cleanup exceeded the shutdown budget; lease expiry recovers", ctx.run_id
@@ -490,6 +549,7 @@ async def _abort(
 
 async def _finish(
     container: RunnerResources,
+    runs: RunsRepository,
     ctx: RunContext,
     token: str,
     status: RunStatus,
@@ -497,8 +557,7 @@ async def _finish(
     error: RunError | None = None,
 ) -> bool:
     """Fenced terminal write, then the observers. False: the lease was lost, nothing written."""
-    assert container.runs is not None
-    if not await container.runs.finish(uuid.UUID(ctx.run_id), token, status, error):
+    if not await runs.finish(uuid.UUID(ctx.run_id), token, status, error):
         logger.warning("run %s: lease lost before the terminal write", ctx.run_id)
         await _notify(container, ctx, RunStatus.RUNNING, usage)
         return False
@@ -514,17 +573,31 @@ async def _notify(
     error: RunError | None = None,
 ) -> None:
     """Tell the observers how this attempt ended (`running`: it ended without a terminal write)."""
+    by_key = usage.snapshot()  # one snapshot: the totals and the breakdown always agree
+    total = Counts()
+    for counts in by_key.values():
+        total.add(counts)
     outcome = RunOutcome(
-        status.value,
-        _totals(usage.totals()),
-        None if error is None else _error_event(error),
-        usage.snapshot(),
+        status.value, _totals(total), None if error is None else _error_event(error), by_key
     )
     for observer in container.observers:
         try:
             await observer.on_finish(ctx, outcome)
         except Exception:  # an observer (ledger) must never change the run's outcome
             logger.exception("run %s: observer %r failed", ctx.run_id, observer)
+
+
+async def _hand_over(
+    container: RunnerResources,
+    runs: RunsRepository,
+    run: Run,
+    ctx: RunContext,
+    token: str,
+    usage: UsageCallback,
+) -> None:
+    """Drain the attempt, then tell the observers it ended without a terminal write."""
+    await _drain(runs, container.queue, run, token)
+    await _notify(container, ctx, RunStatus.RUNNING, usage)
 
 
 async def _drain(runs: RunsRepository, queue: RunQueue | None, run: Run, token: str) -> None:

@@ -16,7 +16,6 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent, RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
@@ -175,6 +174,7 @@ async def test_second_run_on_a_busy_thread_raises(
     assert ei.value.code is ErrorCode.THREAD_BUSY
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+    await res.active_runs.settled()
 
 
 async def test_cancelling_the_consumer_twice_records_cancelled(
@@ -188,5 +188,5 @@ async def test_cancelling_the_consumer_twice_records_cancelled(
     task.cancel()  # the scope owner cancels every await again
     with pytest.raises(asyncio.CancelledError):
         await task
-    await asyncio.gather(*runner._CLEANUPS)
+    await res.active_runs.settled()
     assert await _status(pool, run_id) == RunStatus.CANCELLED
