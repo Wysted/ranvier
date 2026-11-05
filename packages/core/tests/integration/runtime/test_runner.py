@@ -1,4 +1,5 @@
 import asyncio
+import math
 import sys
 import types
 import uuid
@@ -15,10 +16,11 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
+from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent, RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import RunQueue, execute_run
+from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue, execute_run
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository, RunStatus
 
 MODULE = "t16_integration_flows"
@@ -66,6 +68,11 @@ async def pool(clean_database: str) -> AsyncIterator[AsyncConnectionPool]:
 
 
 @dataclass
+class Budget:
+    deadline: float = math.inf
+
+
+@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -73,6 +80,8 @@ class Resources:
     checkpointer: Checkpointer
     observers: list[RunObserver] = field(default_factory=list)
     queue: RunQueue | None = None
+    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
+    shutdown_budget: Budget = field(default_factory=Budget)
 
 
 @pytest.fixture
@@ -166,3 +175,18 @@ async def test_second_run_on_a_busy_thread_raises(
     assert ei.value.code is ErrorCode.THREAD_BUSY
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_cancelling_the_consumer_twice_records_cancelled(
+    res: Resources, pool: AsyncConnectionPool
+) -> None:
+    run_id = await _new(res, "slow")
+    task = asyncio.create_task(_events(res, run_id))
+    await _until_running(pool, run_id)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()  # the scope owner cancels every await again
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.gather(*runner._CLEANUPS)
+    assert await _status(pool, run_id) == RunStatus.CANCELLED

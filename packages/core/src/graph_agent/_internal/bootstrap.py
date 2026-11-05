@@ -12,10 +12,12 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
+from graph_agent._internal.agents.factory import build_agent
 from graph_agent._internal.agents.mcp import McpToolSource, open_mcp_sources
 from graph_agent._internal.agents.tools import ToolRegistry
 from graph_agent._internal.config.settings import Settings
@@ -36,7 +38,7 @@ from graph_agent._internal.runtime.checkpointer import (
 from graph_agent._internal.runtime.context import FlowContextImpl
 from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import RunQueue
+from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import RunsRepository
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ class Container:
     shutdown_budget: ShutdownBudget
     flows: FlowRegistry
     observers: list[RunObserver] = field(default_factory=list)  # T32 appends
+    active_runs: ActiveRuns = field(default_factory=ActiveRuns)  # T26 drains these
     queue: RunQueue | None = None  # T24 sets it; None: inline-only process
 
 
@@ -132,6 +135,9 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
 
         tools = ToolRegistry(settings.tools, settings.limits, cpu_pool)
         mcp = await open_mcp_sources(settings.mcp.servers, stack)
+        # The first resolution imports user modules (blocking I/O); flow factories call
+        # `ctx.tools()` on the loop, so warm the registry off it.
+        await asyncio.to_thread(tools.resolve, list(settings.tools))
 
         def flow_context(name: str) -> FlowContextImpl:
             return FlowContextImpl(
@@ -139,11 +145,10 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
                 config=settings.flows[name].config,
                 model_fn=llm.model,
                 tools_fn=lambda *names: tools.resolve(names),
+                agent_fn=partial(build_agent, models=llm.model, registry=tools, mcp=mcp),
             )
 
-        # shortcut: FlowContextImpl is frozen, FlowContext declares settable attributes; make the
-        # Protocol attributes read-only (runtime/context.py, T14) and drop this ignore.
-        flows = FlowRegistry(settings.flows, checkpointer, flow_context)  # type: ignore[arg-type]
+        flows = FlowRegistry(settings.flows, checkpointer, flow_context)
 
         gauges |= {
             "loop_lag_ms": lambda: sampler.current_ms,

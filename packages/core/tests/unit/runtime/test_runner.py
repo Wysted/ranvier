@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import math
 import sys
 import types
 import uuid
@@ -15,11 +16,11 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
-from langgraph.runtime import RunControl
 from langgraph.types import Command, interrupt
 
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
+from graph_agent._internal.observability.tracing import AGENT_METADATA_KEY as TRACING_AGENT_KEY
 from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.context import RunContext
@@ -36,7 +37,12 @@ from graph_agent._internal.runtime.events import (
     ValuesEvent,
 )
 from graph_agent._internal.runtime.flows import CompiledFlow, FlowRegistry
-from graph_agent._internal.runtime.runner import RunQueue, execute_run, stream_graph
+from graph_agent._internal.runtime.runner import (
+    ActiveRuns,
+    RunQueue,
+    execute_run,
+    stream_graph,
+)
 from graph_agent._internal.runtime.runs import (
     Claim,
     ClaimOutcome,
@@ -46,15 +52,21 @@ from graph_agent._internal.runtime.runs import (
     RunsRepository,
     RunStatus,
 )
+from graph_agent._internal.usage import AGENT_METADATA_KEY, Counts
 
 MODULE = "t16_user_flows"
 FLOW_VERSION = 3
 TOKEN = "w:tok"
+CHAIN = 8
 HEARTBEAT_S = 0.02
 LEASE_S = 1.0
 USAGE = UsageTotals(10, 5, 4)
 # Built at import: the TOML settings source stats files, which blockbuster rejects in the loop.
 SETTINGS = Settings(_env_file=None, runs=RunsSettings(heartbeat_s=HEARTBEAT_S, lease_s=LEASE_S))
+SHORT_LEASE_S = 0.1
+SHORT_LEASE_SETTINGS = Settings(
+    _env_file=None, runs=RunsSettings(heartbeat_s=0.01, lease_s=SHORT_LEASE_S)
+)
 
 
 class State(TypedDict, total=False):
@@ -99,12 +111,21 @@ async def _boom(state: State) -> State:
     raise ValueError("secret-token-123")
 
 
-drain_controls: list[RunControl] = []
+drain_targets: list[ActiveRuns] = []
+reached: list[int] = []
 
 
 async def _drain_first(state: State) -> State:
-    drain_controls[-1].request_drain("test")
+    drain_targets[-1].request_drain()
     return {"x": 1}
+
+
+def _step(i: int) -> Any:
+    async def step(state: State) -> State:
+        reached.append(i)
+        return {"x": i}
+
+    return step
 
 
 async def _after(state: State) -> State:
@@ -130,16 +151,20 @@ def user_module() -> Iterator[types.ModuleType]:
     mod.slow = _builder(_slow)  # type: ignore[attr-defined]
     mod.boom = _builder(_boom)  # type: ignore[attr-defined]
     mod.drain = _builder(_drain_first, _after)  # type: ignore[attr-defined]
+    mod.chain = _builder(*(_step(i) for i in range(CHAIN)))  # type: ignore[attr-defined]
     sys.modules[MODULE] = mod
     yield mod
     del sys.modules[MODULE]
-    drain_controls.clear()
+    drain_targets.clear()
+    reached.clear()
 
 
 class FakeRuns:
     def __init__(self, claim: Claim, heartbeats: Sequence[bool | None] = ()) -> None:
         self.claim_result = claim
+        self.claims = 0
         self.heartbeats = list(heartbeats)
+        self.heartbeat_fault: str | None = None  # "raise" or "hang"
         self.finished: list[tuple[RunStatus, RunError | None]] = []
         self.released: list[str] = []
         self.finish_ok = True
@@ -147,10 +172,15 @@ class FakeRuns:
     async def claim(
         self, run_id: uuid.UUID, owner: str, lease_s: float, max_attempts: int
     ) -> Claim:
+        self.claims += 1
         return self.claim_result
 
     async def heartbeat(self, run_id: uuid.UUID, token: str, lease_s: float) -> bool | None:
         assert token == TOKEN
+        if self.heartbeat_fault == "raise":
+            raise ConnectionError("database unreachable")
+        if self.heartbeat_fault == "hang":
+            await asyncio.sleep(30)
         return self.heartbeats.pop(0) if self.heartbeats else False
 
     async def finish(
@@ -187,6 +217,11 @@ class Observer:
 
 
 @dataclass
+class Budget:
+    deadline: float = math.inf
+
+
+@dataclass
 class Resources:
     settings: Settings
     runs: RunsRepository | None
@@ -194,6 +229,8 @@ class Resources:
     checkpointer: Checkpointer
     observers: list[Any]
     queue: RunQueue | None
+    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
+    shutdown_budget: Budget = field(default_factory=Budget)
 
 
 def _run(flow: str, **overrides: Any) -> Run:
@@ -226,17 +263,18 @@ def _resources(
     heartbeats: Sequence[bool | None] = (),
     timeout_s: float = 5.0,
     saver: InMemorySaver | None = None,
+    settings: Settings = SETTINGS,
 ) -> tuple[Resources, FakeRuns]:
     claim = Claim(outcome, run, TOKEN if outcome is ClaimOutcome.CLAIMED else None)
     fake = FakeRuns(claim, heartbeats)
     saver = saver or InMemorySaver()
     flows = {
         name: FlowSpec(target=f"{MODULE}:{name}", version=FLOW_VERSION, timeout_s=timeout_s)
-        for name in ("work", "ask", "slow", "boom", "drain")
+        for name in ("work", "ask", "slow", "boom", "drain", "chain")
     }
     ctx_factory: Any = lambda name: object()  # noqa: E731
     registry = FlowRegistry(flows, saver, ctx_factory)
-    res = Resources(SETTINGS, cast(RunsRepository, fake), registry, saver, [], FakeQueue())
+    res = Resources(settings, cast(RunsRepository, fake), registry, saver, [], FakeQueue())
     return res, fake
 
 
@@ -308,7 +346,9 @@ async def test_success_writes_terminal_row_before_end_and_notifies_observers(
     assert isinstance(events[0], MetadataEvent) and events[0].run_id == str(run.run_id)
     assert events[-1] == EndEvent("success", USAGE)
     assert finished_when_end_seen == [1] and fake.finished == [(RunStatus.SUCCESS, None)]
-    assert obs.outcomes == [RunOutcome("success", USAGE)]
+    (outcome,) = obs.outcomes
+    assert (outcome.status, outcome.usage, outcome.error) == ("success", USAGE, None)
+    assert list(outcome.usage_by_key.values()) == [Counts(10, 5, 4, 0, 1)]
     # Platform metadata wins over the request's, and lands in the checkpoint.
     latest = await res.checkpointer.aget_tuple({"configurable": {"thread_id": str(run.thread_id)}})
     assert latest is not None
@@ -393,19 +433,17 @@ async def test_client_disconnect_cancels_the_run(user_module: types.ModuleType) 
     assert fake.finished == [(RunStatus.CANCELLED, None)]
 
 
-async def test_drain_releases_lease_and_defers(
-    user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def make_control() -> RunControl:
-        drain_controls.append(RunControl())
-        return drain_controls[-1]
-
-    monkeypatch.setattr(runner, "RunControl", make_control)
+async def test_drain_releases_lease_defers_and_notifies(user_module: types.ModuleType) -> None:
     run = _run("drain")
     res, fake = _resources(run)
+    drain_targets.append(res.active_runs)
+    obs = Observer()
+    res.observers.append(obs)
     events = await _events(res, run)
     assert not any(isinstance(e, (EndEvent, ErrorEvent)) for e in events)
     assert fake.finished == [] and fake.released == [TOKEN]
+    assert [o.status for o in obs.outcomes] == ["running"]
+    assert len(res.active_runs) == 0 and res.active_runs.draining
     assert cast(FakeQueue, res.queue).deferred == [(run.run_id, run.thread_id)]
     # The re-claim resumes with None: the checkpoint already carries this run_id.
     assert await runner._initial_input(res.checkpointer, run) is None
@@ -421,12 +459,15 @@ async def test_flow_version_mismatch_is_an_error_row(user_module: types.ModuleTy
 
 @pytest.mark.parametrize(
     ("outcome", "expect"),
-    [(ClaimOutcome.LOST, []), (ClaimOutcome.CANCELLED, [EndEvent("cancelled", UsageTotals())])],
+    [(ClaimOutcome.LOST, []), (ClaimOutcome.CANCELLED, [MetadataEvent, EndEvent])],
 )
-async def test_claim_outcomes(outcome: ClaimOutcome, expect: list[RunEvent]) -> None:
+async def test_claim_outcomes(outcome: ClaimOutcome, expect: list[type]) -> None:
     run = _run("work")
     res, fake = _resources(run, outcome)
-    assert await _events(res, run) == expect
+    events = await _events(res, run)
+    assert [type(e) for e in events] == expect
+    if expect:
+        assert events[-1] == EndEvent("cancelled", UsageTotals())
     assert fake.finished == []
 
 
@@ -460,3 +501,157 @@ async def test_initial_input_rule() -> None:
     assert await runner._initial_input(saver, run) is None  # same run_id: recovery
     other = _run("ask", thread_id=run.thread_id)
     assert await runner._initial_input(saver, other) == {"x": 0}  # new run on the thread
+    with pytest.raises(RuntimeError, match="resume"):
+        await runner._initial_input(saver, _run("ask", command={"oops": 1}, input=None))
+
+
+# --- cancellation-safe cleanup, lease loss, backpressure, usage ------------------------------
+
+
+async def _settled(tasks: set[Any]) -> None:
+    await asyncio.gather(*tasks)
+
+
+async def test_task_cancelled_twice_still_records_cancelled(user_module: types.ModuleType) -> None:
+    run = _run("slow")
+    res, fake = _resources(run)
+    seen: list[RunEvent] = []
+
+    async def consume() -> None:
+        async for ev in execute_run(res, run.run_id):
+            seen.append(ev)
+
+    task = asyncio.create_task(consume())
+    while not seen:  # noqa: ASYNC110 (waits for the metadata event)
+        await asyncio.sleep(0.005)
+    task.cancel()  # anyio/Starlette re-cancel every await of a cancelled scope
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _settled(runner._CLEANUPS)
+    assert fake.finished == [(RunStatus.CANCELLED, None)]
+    assert len(res.active_runs) == 0
+
+
+async def test_cancellation_while_the_flow_loads_cancels_the_run(
+    user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+    entered = asyncio.Event()
+
+    async def hang(name: str) -> CompiledFlow:
+        entered.set()
+        await asyncio.sleep(30)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(res.flows, "get", hang)
+    task = asyncio.create_task(_events(res, run))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _settled(runner._CLEANUPS)
+    assert fake.finished == [(RunStatus.CANCELLED, None)]
+
+
+async def test_unexpected_failure_records_an_error_row(
+    user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+
+    async def broken(*args: Any) -> Any:
+        raise OSError("checkpointer down")
+
+    monkeypatch.setattr(runner, "_initial_input", broken)
+    with pytest.raises(OSError, match="checkpointer down"):
+        await _events(res, run)
+    await _settled(runner._CLEANUPS)
+    ((status, error),) = fake.finished
+    assert status is RunStatus.ERROR and error is not None and error.message == "OSError"
+
+
+async def test_closing_after_the_end_event_writes_nothing_more(
+    user_module: types.ModuleType,
+) -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+    obs = Observer()
+    res.observers.append(obs)
+    gen = execute_run(res, run.run_id)
+    async for ev in gen:
+        if isinstance(ev, EndEvent):
+            break
+    await gen.aclose()
+    await _settled(runner._CLEANUPS)
+    assert fake.finished == [(RunStatus.SUCCESS, None)]
+    assert len(obs.outcomes) == 1  # the ledger sees the attempt once
+
+
+@pytest.mark.parametrize("fault", ["raise", "hang"])
+async def test_heartbeat_silence_for_a_lease_means_lost(
+    user_module: types.ModuleType, fault: str
+) -> None:
+    run = _run("slow")
+    res, fake = _resources(run, settings=SHORT_LEASE_SETTINGS)
+    fake.heartbeat_fault = fault
+    obs = Observer()
+    res.observers.append(obs)
+    events = await _events(res, run)
+    assert isinstance(events[-1], ErrorEvent) and events[-1].retryable
+    assert fake.finished == []
+    assert [o.status for o in obs.outcomes] == ["running"]
+
+
+async def test_lost_lease_at_finish_still_notifies_the_ledger(
+    user_module: types.ModuleType,
+) -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+    fake.finish_ok = False
+    obs = Observer()
+    res.observers.append(obs)
+    await _events(res, run)
+    (outcome,) = obs.outcomes
+    assert outcome.status == "running" and outcome.usage == USAGE
+
+
+async def test_slow_consumer_backpressures_the_stream(
+    user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "RUN_EVENT_BUFFER", 1)
+    run = _run("chain")
+    res, _ = _resources(run)
+    gen = execute_run(res, run.run_id)
+    await anext(gen)  # metadata, then stop consuming
+    await asyncio.sleep(0.2)
+    assert len(reached) < CHAIN
+    rest = [e async for e in gen]
+    assert len(reached) == CHAIN
+    assert isinstance(rest[-1], EndEvent)
+
+
+async def test_unknown_stream_mode_is_rejected_before_the_claim() -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+    with pytest.raises(ValueError, match="debug"):
+        await _events(res, run, stream_modes=["debug"])
+    assert fake.claims == 0
+
+
+def test_active_runs_tracks_and_drains() -> None:
+    active = ActiveRuns()
+    with active.track() as control:
+        assert len(active) == 1 and not active.draining
+        active.request_drain()
+        assert active.draining
+        assert control is not None
+    assert len(active) == 0
+    with active.track():  # claimed during shutdown: starts already asked to drain
+        assert active.draining
+
+
+def test_usage_agent_key_matches_the_tracing_key() -> None:
+    assert AGENT_METADATA_KEY == TRACING_AGENT_KEY

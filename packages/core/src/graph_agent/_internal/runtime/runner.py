@@ -7,17 +7,16 @@ the runs table: claim, heartbeat, run timeout, cancellation, drain and the fence
 
 import asyncio
 import logging
+import math
 import os
+import socket
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, AsyncIterator, Coroutine, Iterator, Sequence
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final, Protocol, cast
 
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphDrained
 from langgraph.runtime import RunControl
@@ -42,7 +41,6 @@ from graph_agent._internal.runtime.events import (
     map_stream_part,
 )
 from graph_agent._internal.runtime.flows import CompiledFlow, FlowRegistry, check_version
-from graph_agent._internal.runtime.flows import RunError as FlowRunError
 from graph_agent._internal.runtime.runs import (
     ClaimOutcome,
     ErrorCode,
@@ -51,6 +49,7 @@ from graph_agent._internal.runtime.runs import (
     RunsRepository,
     RunStatus,
 )
+from graph_agent._internal.usage import Counts, UsageCallback
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +63,50 @@ _MODE_OF_EVENT: Final[dict[type, str]] = {
     CustomEvent: "custom",
 }
 CLIENT_STREAM_MODES: Final = frozenset(_MODE_OF_EVENT.values())
-_OWNER: Final = f"pid{os.getpid()}"
+RUN_EVENT_BUFFER: Final = 256  # events between the stream and a slow consumer (backpressure)
+_OWNER: Final = f"{socket.gethostname()}:{os.getpid()}"
+DRAIN_REASON: Final = "shutdown"
 
 
 class RunQueue(Protocol):
     """Defers `execute_run` for a run (T24); background endpoints and the drain use it."""
 
     async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None: ...
+
+
+class ActiveRuns:
+    """Controls of the attempts in flight in this process: the shutdown drain (T26) reaches them."""
+
+    def __init__(self) -> None:
+        self._controls: set[RunControl] = set()
+        self.draining = False
+
+    @contextmanager
+    def track(self) -> Iterator[RunControl]:
+        """A fresh `RunControl` for one attempt (S1: a drained control stays drained)."""
+        control = RunControl()
+        if self.draining:  # claimed while shutting down: stop after the first superstep
+            control.request_drain(DRAIN_REASON)
+        self._controls.add(control)
+        try:
+            yield control
+        finally:
+            self._controls.discard(control)
+
+    def request_drain(self) -> None:
+        """Ask every attempt in flight to stop at its next superstep boundary (and new ones too)."""
+        self.draining = True
+        for control in list(self._controls):
+            control.request_drain(DRAIN_REASON)
+
+    def __len__(self) -> int:
+        return len(self._controls)
+
+
+class _Budget(Protocol):
+    """`bootstrap.ShutdownBudget` (runtime cannot import bootstrap)."""
+
+    deadline: float  # loop time; `math.inf` until shutdown starts
 
 
 class RunnerResources(Protocol):
@@ -82,32 +118,23 @@ class RunnerResources(Protocol):
     checkpointer: Checkpointer
     observers: list[RunObserver]
     queue: RunQueue | None
+    active_runs: ActiveRuns
 
-
-class UsageCollector(BaseCallbackHandler):
-    """Sums token usage over every chat-model call of a run, subagents included."""
-
-    run_inline = True  # sync handler called on the loop, no executor hop and no data race
-
-    def __init__(self) -> None:
-        self._input = self._output = self._cached = 0
-
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
-        for generations in response.generations:
-            for gen in generations:
-                msg = gen.message if isinstance(gen, ChatGeneration) else None
-                if isinstance(msg, AIMessage) and (usage := msg.usage_metadata) is not None:
-                    self._input += usage["input_tokens"]
-                    self._output += usage["output_tokens"]
-                    details = usage.get("input_token_details") or {}
-                    self._cached += details.get("cache_read", 0)
-
-    def totals(self) -> UsageTotals:
-        return UsageTotals(self._input, self._output, self._cached)
+    @property
+    def shutdown_budget(self) -> _Budget: ...
 
 
 def metadata_event(ctx: RunContext) -> MetadataEvent:
     return MetadataEvent(ctx.run_id, ctx.thread_id, ctx.flow, ctx.flow_version, ctx.attempt)
+
+
+def _check_modes(stream_modes: Sequence[str]) -> None:
+    if unknown := set(stream_modes) - CLIENT_STREAM_MODES:
+        raise ValueError(f"unknown stream modes {sorted(unknown)}")
+
+
+def _totals(counts: Counts) -> UsageTotals:
+    return UsageTotals(counts.input_tokens, counts.output_tokens, counts.cached_input_tokens)
 
 
 async def stream_graph(
@@ -119,17 +146,19 @@ async def stream_graph(
     observers: Sequence[RunObserver] = (),
     *,
     control: RunControl | None = None,
-    usage: UsageCollector | None = None,
+    usage: UsageCallback | None = None,
 ) -> AsyncGenerator[RunEvent]:
     """Run the graph once and yield `metadata`, the mapped events and a final `end`.
 
-    No database. Errors (including `GraphDrained`) propagate to the caller. `config` must not
-    carry callbacks: the usage collector and the observers' callbacks are installed here.
-    `on_finish` is the caller's job (`execute_run` calls it after the terminal write).
+    No database and no run timeout (the caller wraps one; `execute_run` does). Errors (including
+    `GraphDrained`) propagate to the caller. `config` must not carry callbacks: the usage callback
+    (the caller's, to read the totals afterwards, or a fresh one) and the observers' callbacks are
+    installed here. `on_finish` is the caller's job (`execute_run` calls it after the terminal
+    write).
     """
-    if unknown := set(stream_modes) - CLIENT_STREAM_MODES:
-        raise ValueError(f"unknown stream modes {sorted(unknown)}")
-    usage = usage or UsageCollector()
+    _check_modes(stream_modes)
+    if usage is None:
+        usage = UsageCallback()
     run_config: RunnableConfig = {
         **config,
         "callbacks": [usage, *(cb for obs in observers for cb in obs.callbacks(ctx))],
@@ -159,7 +188,7 @@ async def stream_graph(
                 continue
             yield event
     status = RunStatus.INTERRUPTED if interrupted else RunStatus.SUCCESS
-    yield EndEvent(status.value, usage.totals())
+    yield EndEvent(status.value, _totals(usage.totals()))
 
 
 class _StopReason(StrEnum):
@@ -168,16 +197,22 @@ class _StopReason(StrEnum):
 
 
 @dataclass(slots=True)
-class _Stop:
+class _Attempt:
+    """Mutable state shared by the consumer, the pump and the heartbeat of one attempt."""
+
+    pump: "asyncio.Task[None] | None" = None
     reason: _StopReason | None = None
     timed_out: bool = False
+    settled: bool = False  # the run row (or its lease) is already dealt with: no cleanup write
+
+    def stop(self, reason: _StopReason) -> None:
+        self.reason = reason
+        if self.pump is not None:
+            self.pump.cancel()
 
 
-class _Done:
-    """Queue sentinel: the pump task finished (inspect the task for how)."""
-
-
-_DONE: Final = _Done()
+# Strong references: the event loop only keeps weak ones to tasks.
+_CLEANUPS: set["asyncio.Task[None]"] = set()
 
 
 async def execute_run(
@@ -191,106 +226,152 @@ async def execute_run(
 
     Yields nothing if the claim is lost (another executor owns it) or if the lease is lost and
     the drain ends the stream silently. Raises `RunError(thread_busy, retryable)` when another run
-    of the thread is running (HTTP 409; the worker retries with backoff). Closing the generator
-    (client disconnect) cancels the run. Memory mode has no runs repository: raises.
+    of the thread is running (HTTP 409; the worker retries with backoff). An inline caller that
+    gets it must `request_cancel` the pending row it created, or it stays claimable. Closing the
+    generator (client disconnect) or cancelling its task cancels the run: the cleanup runs in
+    a separate shielded task bounded by the shutdown budget. Memory mode has no runs repository:
+    raises.
     """
+    _check_modes(stream_modes)
     runs = container.runs
     if runs is None:
         raise RuntimeError("execute_run needs the runs repository; memory mode uses stream_graph")
     cfg = container.settings.runs
+    loop = asyncio.get_running_loop()
+    claimed_at = loop.time()  # the lease runs from the claim: heartbeats are measured against it
     claim = await runs.claim(run_id, owner, cfg.lease_s, cfg.max_attempts)
     if claim.outcome is ClaimOutcome.LOST:
         return
     if claim.outcome is ClaimOutcome.THREAD_BUSY:
         raise RunError(ErrorCode.THREAD_BUSY, "thread has a running run", retryable=True)
-    if claim.outcome is ClaimOutcome.CANCELLED:
-        yield EndEvent(RunStatus.CANCELLED.value, UsageTotals())
-        return
     run, token = claim.run, claim.token
-    assert run is not None and token is not None  # CLAIMED always carries both
+    if run is None:
+        raise RuntimeError(f"claim {claim.outcome} of run {run_id} carries no run")
     ctx = RunContext(
         str(run.run_id), str(run.thread_id), run.flow, run.flow_version, run.attempt, run.tenant_id
     )
-    usage = UsageCollector()
-
-    try:
-        flow = await container.flows.get(run.flow)
-        check_version(flow, run.flow_version)
-    except FlowRunError as exc:
-        error = RunError(ErrorCode(exc.code), exc.message, exc.retryable)
-        if await _finish(container, ctx, token, RunStatus.ERROR, usage, error):
-            yield metadata_event(ctx)
-            yield _error_event(error)
+    if claim.outcome is ClaimOutcome.CANCELLED:
+        yield metadata_event(ctx)
+        yield EndEvent(RunStatus.CANCELLED.value, UsageTotals())
         return
+    if token is None:
+        raise RuntimeError(f"claimed run {run_id} carries no lease token")
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": ctx.thread_id},
-        # Platform keys win: a client cannot spoof the recovery check's `run_id`.
-        "metadata": {**run.metadata, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
-    }
-    if flow.max_concurrency is not None:
-        config["max_concurrency"] = flow.max_concurrency
-    control = RunControl()  # one per attempt (S1): a drained control stays drained
-    stop = _Stop()
-    # shortcut: unbounded queue, a slow SSE client buffers events in memory; bound it (and
-    # block the pump) if long runs with big `values` streams show up.
-    queue: asyncio.Queue[RunEvent | _Done] = asyncio.Queue()
-    stream = stream_graph(
-        flow,
-        await _initial_input(container.checkpointer, run),
-        config,
-        ctx,
-        stream_modes,
-        container.observers,
-        control=control,
-        usage=usage,
+    usage = UsageCallback()  # per attempt: attempts accumulate in the ledger
+    attempt = _Attempt()
+    beat = asyncio.create_task(
+        _heartbeat(runs, run, token, container, attempt, claimed_at), name=f"beat-{run_id}"
     )
-    pump = asyncio.create_task(_pump(stream, queue, flow.timeout_s, stop), name=f"run-{run_id}")
-    beat = asyncio.create_task(_heartbeat(runs, run, token, container, pump, stop))
-    end: EndEvent | None = None
     try:
-        while not isinstance(item := await queue.get(), _Done):
-            if isinstance(item, EndEvent):
-                end = item  # held back until the terminal row is written
-            else:
-                yield item
-    except (GeneratorExit, asyncio.CancelledError):
-        # Client went away (or the executor task was cancelled): cancel the run, best effort.
-        await _stop_tasks(pump, beat)
         try:
-            await _finish(container, ctx, token, RunStatus.CANCELLED, usage)
-        except Exception:
-            logger.exception("run %s: could not record cancellation", run_id)
-        raise
-    await _stop_tasks(beat)  # no lease extension after the stream ended
-    await asyncio.wait({pump})
-
-    if pump.cancelled():  # only the heartbeat cancels the pump while we are still listening
-        if stop.reason is _StopReason.CANCEL:
-            if await _finish(container, ctx, token, RunStatus.CANCELLED, usage):
-                yield EndEvent(RunStatus.CANCELLED.value, usage.totals())
+            flow = await container.flows.get(run.flow)
+            check_version(flow, run.flow_version)
+        except RunError as flow_error:  # flow_not_found, flow_build_failed, flow_version_mismatch
+            await _stop_tasks(beat)
+            ok = await _finish(container, ctx, token, RunStatus.ERROR, usage, flow_error)
+            attempt.settled = True
+            if ok:
+                yield metadata_event(ctx)
+                yield _error_event(flow_error)
             return
-        logger.warning("run %s: lease lost, stopping without a terminal write", run_id)
-        yield _error_event(RunError(ErrorCode.INTERNAL_ERROR, "run lease lost", retryable=True))
-        return
-    failure = pump.exception()
 
-    if failure is None:
-        assert end is not None  # stream_graph always ends with an `end` event
-        if await _finish(container, ctx, token, RunStatus(end.status), usage):
-            yield end
-        return
-    if isinstance(failure, GraphDrained):  # a GraphBubbleUp, not a failure: hand the run over
-        await _drain(runs, container.queue, run, token)
-        return
-    if stop.timed_out:
-        error = RunError(ErrorCode.RUN_TIMEOUT, f"run exceeded {flow.timeout_s}s", retryable=False)
-    else:
-        # Client message: exception type only (user exceptions may carry secrets).
-        logger.error("run %s failed", run_id, exc_info=failure)
-        error = RunError(ErrorCode.INTERNAL_ERROR, type(failure).__name__, retryable=False)
-    if await _finish(container, ctx, token, RunStatus.ERROR, usage, error):
-        yield _error_event(error)
+        config: RunnableConfig = {
+            "configurable": {"thread_id": ctx.thread_id},
+            # Platform keys win: a client cannot spoof the recovery check's `run_id`.
+            "metadata": {**run.metadata, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
+        }
+        if flow.max_concurrency is not None:
+            config["max_concurrency"] = flow.max_concurrency
+        initial = await _initial_input(container.checkpointer, run)
+        queue: asyncio.Queue[RunEvent] = asyncio.Queue(RUN_EVENT_BUFFER)
+        with container.active_runs.track() as control:
+            stream = stream_graph(
+                flow,
+                initial,
+                config,
+                ctx,
+                stream_modes,
+                container.observers,
+                control=control,
+                usage=usage,
+            )
+            pump = asyncio.create_task(
+                _pump(stream, queue, flow.timeout_s, attempt), name=f"run-{run_id}"
+            )
+            attempt.pump = pump
+            # Also fires if the task is cancelled before it ever starts.
+            pump.add_done_callback(lambda _task: queue.shutdown())
+            if attempt.reason is not None:  # the heartbeat decided while the flow was loading
+                pump.cancel()
+            end: EndEvent | None = None
+            while True:
+                try:
+                    item = await queue.get()
+                except asyncio.QueueShutDown:
+                    break
+                if isinstance(item, EndEvent):
+                    end = item  # held back until the terminal row is written
+                else:
+                    yield item
+            await _stop_tasks(beat)  # no lease extension after the stream ended
+            await asyncio.wait({pump})
+
+        if pump.cancelled():  # only the heartbeat cancels the pump while we are listening
+            if attempt.reason is _StopReason.CANCEL:
+                ok = await _finish(container, ctx, token, RunStatus.CANCELLED, usage)
+                attempt.settled = True
+                if ok:
+                    yield EndEvent(RunStatus.CANCELLED.value, _totals(usage.totals()))
+                return
+            logger.warning("run %s: lease lost, stopping without a terminal write", run_id)
+            await _notify(container, ctx, RunStatus.RUNNING, usage)
+            attempt.settled = True
+            yield _error_event(RunError(ErrorCode.INTERNAL_ERROR, "run lease lost", retryable=True))
+            return
+        failure = pump.exception()
+
+        if failure is None:
+            if end is None:  # stream_graph always ends with an `end` event
+                raise RuntimeError(f"run {run_id}: the stream ended without an end event")
+            ok = await _finish(container, ctx, token, RunStatus(end.status), usage)
+            attempt.settled = True
+            if ok:
+                yield end
+            return
+        if isinstance(failure, GraphDrained):  # a GraphBubbleUp, not a failure: hand the run over
+            await _drain(runs, container.queue, run, token)
+            await _notify(container, ctx, RunStatus.RUNNING, usage)
+            attempt.settled = True
+            return
+        if attempt.timed_out:
+            error = RunError(
+                ErrorCode.RUN_TIMEOUT, f"run exceeded {flow.timeout_s}s", retryable=False
+            )
+        else:
+            # Client message: exception type only (user exceptions may carry secrets).
+            logger.error("run %s failed", run_id, exc_info=failure)
+            error = RunError(ErrorCode.INTERNAL_ERROR, type(failure).__name__, retryable=False)
+        ok = await _finish(container, ctx, token, RunStatus.ERROR, usage, error)
+        attempt.settled = True
+        if ok:
+            yield _error_event(error)
+    except BaseException as exc:
+        # Client gone (GeneratorExit), executor cancelled, or a bug/infrastructure failure.
+        if not attempt.settled:
+            cancelled = isinstance(exc, (GeneratorExit, asyncio.CancelledError))
+            if cancelled:
+                status, error = RunStatus.CANCELLED, None
+            else:
+                logger.error("run %s: unexpected failure", run_id, exc_info=exc)
+                status = RunStatus.ERROR
+                error = RunError(ErrorCode.INTERNAL_ERROR, type(exc).__name__, retryable=False)
+            tasks = (beat,) if attempt.pump is None else (attempt.pump, beat)
+            await _shielded(_abort(container, ctx, token, status, usage, error, tasks))
+        raise
+    finally:
+        beat.cancel()
+        if attempt.pump is not None:
+            attempt.pump.cancel()
 
 
 async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
@@ -299,26 +380,30 @@ async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
     if latest is not None and latest.metadata.get("run_id") == str(run.run_id):
         return None
     if run.command is not None:
-        assert isinstance(run.command, dict)  # stored as {"resume": ...} (api.dto.ResumeCommand)
+        # Stored as {"resume": ...} (api.dto.ResumeCommand).
+        if not isinstance(run.command, dict) or "resume" not in run.command:
+            raise RuntimeError(f"run {run.run_id}: stored command has no 'resume'")
         return Command(resume=run.command["resume"])
     return run.input
 
 
 async def _pump(
     stream: AsyncIterator[RunEvent],
-    queue: asyncio.Queue[RunEvent | _Done],
+    queue: "asyncio.Queue[RunEvent]",
     timeout_s: float,
-    stop: _Stop,
+    attempt: _Attempt,
 ) -> None:
-    """Drain the stream into the queue under the run timeout; always ends with `_DONE`."""
+    """Drain the stream into the bounded queue under the run timeout.
+
+    A full queue blocks the stream (backpressure); that wait counts against the timeout.
+    """
     timeout = asyncio.timeout(timeout_s)
     try:
         async with timeout:
             async for event in stream:
-                queue.put_nowait(event)
+                await queue.put(event)
     finally:
-        stop.timed_out = timeout.expired()
-        queue.put_nowait(_DONE)
+        attempt.timed_out = timeout.expired()
 
 
 async def _heartbeat(
@@ -326,25 +411,37 @@ async def _heartbeat(
     run: Run,
     token: str,
     container: RunnerResources,
-    pump: "asyncio.Task[None]",
-    stop: _Stop,
+    attempt: _Attempt,
+    claimed_at: float,
 ) -> None:
+    """Extend the lease every `heartbeat_s`; stop the stream on a cancel request or a lost lease.
+
+    The lease counts as lost when a heartbeat answers so, or when none succeeded for `lease_s`
+    (the database is unreachable: the lease has expired and another executor may own the run).
+    """
     cfg = container.settings.runs
+    loop = asyncio.get_running_loop()
+    last_ok = claimed_at
     while True:
         await asyncio.sleep(cfg.heartbeat_s)
+        remaining = max(cfg.lease_s - (loop.time() - last_ok), 0.0)
         try:
-            cancel_requested = await runs.heartbeat(run.run_id, token, cfg.lease_s)
-        except Exception:  # a transient DB error must not kill the run; a lost lease shows up next
+            async with asyncio.timeout(remaining):  # a hung call must not outlive the lease
+                cancel_requested = await runs.heartbeat(run.run_id, token, cfg.lease_s)
+        except Exception as exc:
+            if isinstance(exc, TimeoutError) or loop.time() - last_ok >= cfg.lease_s:
+                logger.warning("run %s: no heartbeat within the lease", run.run_id, exc_info=True)
+                attempt.stop(_StopReason.LOST)
+                return
             logger.warning("run %s: heartbeat failed", run.run_id, exc_info=True)
             continue
+        last_ok = loop.time()
         if cancel_requested is None:
-            stop.reason = _StopReason.LOST
-        elif cancel_requested:
-            stop.reason = _StopReason.CANCEL
-        else:
-            continue
-        pump.cancel()
-        return
+            attempt.stop(_StopReason.LOST)
+            return
+        if cancel_requested:
+            attempt.stop(_StopReason.CANCEL)
+            return
 
 
 async def _stop_tasks(*tasks: "asyncio.Task[None]") -> None:
@@ -353,28 +450,81 @@ async def _stop_tasks(*tasks: "asyncio.Task[None]") -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _shielded(coro: Coroutine[Any, Any, None]) -> None:
+    """Run `coro` as its own task and wait for it, surviving cancellation of the caller.
+
+    anyio/Starlette cancel every `await` of a cancelled scope again, so the cleanup cannot run in
+    the cancelled task itself: it lives on in `_CLEANUPS` even if this wait is cancelled again.
+    """
+    task = asyncio.create_task(coro)
+    _CLEANUPS.add(task)
+    task.add_done_callback(_CLEANUPS.discard)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        logger.debug("cleanup wait cancelled again; the cleanup task keeps running")
+
+
+async def _abort(
+    container: RunnerResources,
+    ctx: RunContext,
+    token: str,
+    status: RunStatus,
+    usage: UsageCallback,
+    error: RunError | None,
+    tasks: "tuple[asyncio.Task[None], ...]",
+) -> None:
+    """Stop the attempt's tasks, then record `cancelled`/`error`, within the shutdown budget."""
+    deadline = container.shutdown_budget.deadline
+    try:
+        async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
+            await _stop_tasks(*tasks)
+            await _finish(container, ctx, token, status, usage, error)
+    except TimeoutError:
+        logger.error(
+            "run %s: cleanup exceeded the shutdown budget; lease expiry recovers", ctx.run_id
+        )
+    except Exception:
+        logger.exception("run %s: could not record %s", ctx.run_id, status)
+
+
 async def _finish(
     container: RunnerResources,
     ctx: RunContext,
     token: str,
     status: RunStatus,
-    usage: UsageCollector,
+    usage: UsageCallback,
     error: RunError | None = None,
 ) -> bool:
     """Fenced terminal write, then the observers. False: the lease was lost, nothing written."""
     assert container.runs is not None
     if not await container.runs.finish(uuid.UUID(ctx.run_id), token, status, error):
         logger.warning("run %s: lease lost before the terminal write", ctx.run_id)
+        await _notify(container, ctx, RunStatus.RUNNING, usage)
         return False
+    await _notify(container, ctx, status, usage, error)
+    return True
+
+
+async def _notify(
+    container: RunnerResources,
+    ctx: RunContext,
+    status: RunStatus,
+    usage: UsageCallback,
+    error: RunError | None = None,
+) -> None:
+    """Tell the observers how this attempt ended (`running`: it ended without a terminal write)."""
     outcome = RunOutcome(
-        status.value, usage.totals(), None if error is None else _error_event(error)
+        status.value,
+        _totals(usage.totals()),
+        None if error is None else _error_event(error),
+        usage.snapshot(),
     )
     for observer in container.observers:
         try:
             await observer.on_finish(ctx, outcome)
         except Exception:  # an observer (ledger) must never change the run's outcome
             logger.exception("run %s: observer %r failed", ctx.run_id, observer)
-    return True
 
 
 async def _drain(runs: RunsRepository, queue: RunQueue | None, run: Run, token: str) -> None:
