@@ -1,8 +1,9 @@
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
@@ -23,6 +24,7 @@ from graph_agent._internal.runtime.events import (
 class _State(TypedDict, total=False):
     x: Any
     msgs: list[Any]
+    log: Annotated[list[str], operator.add]
 
 
 def _echo(state: _State) -> _State:
@@ -57,7 +59,7 @@ async def test_updates_values_custom() -> None:
     )
     events = await _collect(graph, {"x": 0})
     assert UpdatesEvent((), "echo", {"x": 1}) in events
-    assert ValuesEvent((), {"x": 1}) in events
+    assert ValuesEvent((), {"x": 1, "log": []}) in events
     assert CustomEvent((), None, {"progress": 1}) in events
 
 
@@ -97,3 +99,82 @@ async def test_interrupt_maps_once_from_updates() -> None:
 def test_unknown_type_raises() -> None:
     with pytest.raises(ValueError, match="unknown stream part"):
         map_stream_part({"type": "tasks", "ns": (), "data": {}})
+
+
+async def test_parallel_resume_strips_cache_metadata() -> None:
+    graph = (
+        StateGraph(_State)
+        .add_node("ask", _ask)
+        .add_node("b", lambda s: {"log": ["b"]})
+        .add_edge(START, "ask")
+        .add_edge(START, "b")
+        .add_edge("ask", END)
+        .add_edge("b", END)
+        .compile(checkpointer=InMemorySaver())
+    )
+    config = {"configurable": {"thread_id": "p"}}
+    first = await _collect(graph, {"log": []}, config)
+    assert UpdatesEvent((), "b", {"log": ["b"]}) in first
+    resumed = await _collect(graph, Command(resume="bob"), config)
+    assert UpdatesEvent((), "ask", {"x": "bob"}) in resumed
+
+
+async def test_parallel_interrupts_one_event_each() -> None:
+    graph = (
+        StateGraph(_State)
+        .add_node("ask", _ask)
+        .add_node("ask2", _ask)
+        .add_edge(START, "ask")
+        .add_edge(START, "ask2")
+        .add_edge("ask", END)
+        .add_edge("ask2", END)
+        .compile(checkpointer=InMemorySaver())
+    )
+    events = await _collect(graph, {"x": 0}, {"configurable": {"thread_id": "q"}})
+    interrupts = [e for e in events if isinstance(e, InterruptEvent)]
+    assert sum(len(e.interrupts) for e in interrupts) == 2
+
+
+def _subgraph(node: Any) -> Any:
+    sub = StateGraph(_State).add_node("inner", node).add_edge(START, "inner").add_edge("inner", END)
+    return (
+        StateGraph(_State)
+        .add_node("sub", sub.compile())
+        .add_edge(START, "sub")
+        .add_edge("sub", END)
+        .compile(checkpointer=InMemorySaver())
+    )
+
+
+async def test_subgraph_interrupt_mapped_only_at_root() -> None:
+    graph = _subgraph(_ask)
+    config = {"configurable": {"thread_id": "s"}}
+    events = await _collect(graph, {"x": 0}, config)
+    assert len([e for e in events if isinstance(e, InterruptEvent)]) == 1
+    resumed = await _collect(graph, Command(resume="bob"), config)
+    assert not any(isinstance(e, InterruptEvent) for e in resumed)
+
+
+async def test_subgraph_ns_propagates() -> None:
+    events = await _collect(_subgraph(_echo), {"x": 0}, {"configurable": {"thread_id": "n"}})
+    nested = [e for e in events if isinstance(e, UpdatesEvent) and e.node == "inner"]
+    (update,) = nested
+    assert len(update.ns) == 1
+    assert update.ns[0].startswith("sub:")
+    (custom,) = [e for e in events if isinstance(e, CustomEvent)]
+    assert custom.ns == update.ns
+    assert custom.node == "sub"
+
+
+async def test_non_streamed_llm_message_mapped_node_messages_dropped() -> None:
+    async def node(state: _State) -> _State:
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="whole")]), disable_streaming=True
+        )
+        reply = await model.ainvoke([HumanMessage("yo")])
+        return {"msgs": [reply, ToolMessage("tool out", tool_call_id="1")]}
+
+    graph = StateGraph(_State).add_node("llm", node).add_edge(START, "llm").add_edge("llm", END)
+    events = await _collect(graph.compile(), {"x": 0})
+    (msg,) = [e for e in events if isinstance(e, MessagesEvent)]
+    assert (msg.node, msg.content, msg.tool_call_chunks) == ("llm", "whole", ())
