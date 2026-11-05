@@ -8,7 +8,7 @@ unblocks: [T23, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T22-api-auth
-status: todo
+status: done
 ---
 
 ## Goal
