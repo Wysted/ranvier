@@ -9,7 +9,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T01 | `git init`, `.gitignore`, uv workspace root, `packages/core/pyproject.toml` (deps, extras `[openai]` `[anthropic]` `[ollama]` `[otel]`), empty `graph_agent` with `py.typed` | 1 | - | sa-build-py | [T01](tasks/T01-workspace-skeleton.md) | done |
 | T02 | Tooling: ruff (with `banned-api`), mypy strict, import-linter contracts C1-C6, pytest config, `blockbuster`, `scripts/check.sh` | 1 | T01 | sa-build-py | [T02](tasks/T02-tooling-gate.md) | done |
 | T03 | CI: clean install, `check.sh`, git-subdirectory install check | 1 | T02 | sa-build-py | [T03](tasks/T03-ci-workflow.md) | todo |
-| T04 | `config/settings.py`: root `Settings` (env + `.env` + `graph-agent.toml`, prefix `GRAPH_AGENT_`) | 2 | T02 | sa-dev-py | [T04](tasks/T04-settings.md) | todo |
+| T04 | `config/settings.py`: root `Settings` (env + `.env` + `graph-agent.toml`, prefix `GRAPH_AGENT_`) | 2 | T02 | sa-dev-py | [T04](tasks/T04-settings.md) | done |
 | T05 | `config/manifest.py`: flows, tools, crons, mcp, profiles models; lazy `module:object` import | 2 | T04 | sa-dev-py | [T05](tasks/T05-manifest.md) | todo |
 | T06 | `db/pool.py`, `db/migrate.py` (advisory lock), `migrations/0001_init.sql` (`runs` with partial unique index, `usage`) | 4 | T04 | sa-dev-py | [T06](tasks/T06-db-migrations.md) | todo |
 | T07 | Dev `docker-compose.yml` (Postgres) and integration-test marker | 4 | T01 | sa-build-py | [T07](tasks/T07-dev-compose.md) | done |
