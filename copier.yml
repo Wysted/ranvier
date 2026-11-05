@@ -18,6 +18,12 @@ package_name:
   validator: >-
     {% if not (package_name | regex_search('^[a-z][a-z0-9_]*$')) %}
     Use lowercase letters, digits and underscores, starting with a letter.
+    {% elif package_name == 'graph_agent' or package_name in [
+      'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class',
+      'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global',
+      'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return',
+      'try', 'while', 'with', 'yield'] %}
+    Reserved: it is 'graph_agent' or a Python keyword.
     {% endif %}
 
 graph_agent_tag:
@@ -27,5 +33,4 @@ graph_agent_tag:
 
 graph_agent_repo:
   type: str
-  help: Git URL of the graph-agent repository (the git host is not decided yet)
-  default: https://git.example.com/graph-agent.git
+  help: Git URL of the graph-agent repository (the git host is not decided yet; no default)

@@ -1,6 +1,6 @@
 # {{ project_name }}
 
-Flows on [graph-agent](https://git.example.com/graph-agent): plain LangGraph `StateGraph`s that the
+Flows on [graph-agent]({{ graph_agent_repo }}): plain LangGraph `StateGraph`s that the
 platform registers, runs, checkpoints in Postgres and serves over HTTP. This repo holds only what
 your product owns: flows, tools, the manifest and deployment files. The platform is a pinned
 dependency (`graph-agent` at tag `{{ graph_agent_tag }}`).
@@ -24,12 +24,18 @@ change in any release; ruff (`banned-api`) and import-linter fail the build if y
 ```bash
 uv lock && uv sync                     # first time: commit uv.lock
 cp .env.example .env                   # then edit it
+export UV_ENV_FILE=.env                # see the note below
+ollama pull qwen3:4b                   # the default profile's model
 docker compose up -d db                # Postgres on 127.0.0.1:25432
 uv run graph-agent validate            # compile every flow in the manifest
 uv run graph-agent migrate             # schema, checkpointer tables, job queue
 uv run graph-agent serve               # HTTP API on api.host:api.port
 uv run graph-agent worker              # background runs, crons, recovery (second terminal)
 ```
+
+`UV_ENV_FILE=.env` makes `uv run` load `.env` into the process environment. graph-agent reads
+`.env` only for its own settings; the secrets named by `key_env` / `api_key_env` in
+`graph-agent.toml` must be real environment variables, or `serve` fails with "env var ... is unset".
 
 Other commands: `graph-agent run example --input '{"messages": [...]}' [--memory]` runs a flow
 inline and prints its events (`--memory` needs no database), `graph-agent crons` lists declared
@@ -56,7 +62,9 @@ inside the event loop fails. Keep file and network I/O in nodes async (or run it
 ## Deploy
 
 `docker compose up -d --build` starts Postgres, a one-shot `migrate`, the `api` and the `worker`
-from one image (CPython 3.14.5+ slim, uv, `--locked`: commit `uv.lock`). Behind it:
+from one image (CPython 3.14.5+ slim, uv, `--locked`: commit `uv.lock`). To roll out a new
+build (above all after upgrading graph-agent, since Procrastinate's schema changes must not run
+under old workers): `docker compose stop api worker && docker compose up -d --build`. Behind it:
 
 - **Auth.** The API refuses `api.auth = "none"` on a non-loopback host. Static keys are declared
   in `graph-agent.toml` by the NAME of the variable that holds them. **A key without `tenant_id`
@@ -72,6 +80,10 @@ from one image (CPython 3.14.5+ slim, uv, `--locked`: commit `uv.lock`). Behind 
   worker. Keep the orchestrator's stop grace period above `limits.shutdown_grace_s` (60 s by
   default) and above your longest node timeout.
 - **Health.** `GET /healthz` (liveness), `GET /readyz` (pools and event-loop lag).
+- **Ollama.** Containers cannot reach the host's Ollama at `localhost`. Set
+  `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` (the ollama client reads it when the
+  profile has no `base_url`); compose maps `host.docker.internal` on Linux. Ollama must listen
+  beyond loopback (`OLLAMA_HOST=0.0.0.0` for the Ollama server).
 - **Secrets.** Only variable NAMES live in `graph-agent.toml`; values come from the environment
   (`.env` locally, your secret store in production). Database URLs must not embed passwords in
   logs or error messages you add.
@@ -102,6 +114,10 @@ git status                                  # Copier needs a clean working tree
 uvx copier update --vcs-ref v0.2.0 --data graph_agent_tag=v0.2.0
 uv lock --upgrade-package graph-agent && scripts/check.sh
 ```
+
+Before deploying an upgrade, stop the running services so `migrate` runs alone (a new
+Procrastinate version changes the job-queue schema):
+`docker compose stop api worker && docker compose up -d --build`.
 
 Pass both: `--vcs-ref` picks the template version and `graph_agent_tag` is the answer that
 renders the pin in `pyproject.toml`; they must name the same tag. Without `--vcs-ref` Copier
