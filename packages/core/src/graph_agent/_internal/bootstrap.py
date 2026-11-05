@@ -7,9 +7,12 @@ tracing and the checkpointer (design sections 2, 8). Each resource is entered in
 
 import asyncio
 import logging
+import math
 from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from typing import Any
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -31,12 +34,24 @@ from graph_agent._internal.runtime.checkpointer import (
     create_memory_checkpointer,
 )
 from graph_agent._internal.runtime.events import RunObserver
+from graph_agent._internal.runtime.runs import RunsRepository
 
 logger = logging.getLogger(__name__)
 
 GAUGE_INTERVAL_S = 10.0
 
 type GaugeSource = Callable[[], float]
+
+
+class ShutdownBudget:
+    """One deadline shared by every teardown step that can block (flush, T26 drain)."""
+
+    def __init__(self, grace_s: float) -> None:
+        self._grace_s = grace_s
+        self.deadline = math.inf  # until close starts
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.deadline = loop.time() + self._grace_s
 
 
 @dataclass(slots=True)
@@ -47,6 +62,7 @@ class Container:
     app_pool: AsyncConnectionPool | None
     checkpointer_pool: CheckpointerPool | None
     checkpointer: Checkpointer
+    runs: RunsRepository | None  # None in memory mode: no in-memory repository
     llm: LlmRegistry
     limits: Limits
     cpu_pool: CpuPool
@@ -54,6 +70,7 @@ class Container:
     observability: Observability
     tools: ToolRegistry
     mcp: McpToolSource
+    shutdown_budget: ShutdownBudget
     observers: list[RunObserver] = field(default_factory=list)  # T32 appends
 
 
@@ -64,15 +81,17 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
         loop = asyncio.get_running_loop()
         # First in, last out: later teardown steps (observability flush) still use to_thread.
         executor = install_default_executor(loop, settings.limits.sync_threads)
-        stack.callback(executor.shutdown, wait=False)
+        stack.callback(_restore_default_executor, loop, executor)
 
         # Sync and may import the OTel extra: off the loop.
         obs = await asyncio.to_thread(setup_observability, settings)
-        stack.push_async_callback(_shutdown_observability, obs, settings.limits.shutdown_grace_s)
+        budget = ShutdownBudget(settings.limits.shutdown_grace_s)
+        stack.push_async_callback(_shutdown_observability, obs, budget)
 
         gauges: dict[str, GaugeSource] = {}
         app_pool: AsyncConnectionPool | None = None
         cp_pool: CheckpointerPool | None = None
+        runs: RunsRepository | None = None
         if memory:
             checkpointer: Checkpointer = create_memory_checkpointer()
         else:
@@ -83,6 +102,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             url = db.url.get_secret_value()
             app_pool = await open_app_pool(url, db.app_pool_max)
             stack.push_async_callback(app_pool.close)
+            runs = RunsRepository(app_pool)  # the pool owns the connections: no teardown
             cp_pool = await open_checkpointer_pool(url, db.checkpointer_pool_max)
             stack.push_async_callback(cp_pool.close)
             for label, pool in (("app", app_pool), ("checkpointer", cp_pool)):
@@ -100,7 +120,8 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
         sampler = LoopLagSampler(settings.limits.loop_lag_warn_ms)
         await stack.enter_async_context(sampler)
 
-        cpu_pool = CpuPool(settings.limits.cpu_workers)
+        # The constructor allocates semaphores and touches the filesystem: off the loop.
+        cpu_pool = await asyncio.to_thread(CpuPool, settings.limits.cpu_workers)
         stack.callback(cpu_pool.close)  # registered first: kills workers if the warm-up fails
         await cpu_pool.start()  # workers up before run admission opens
 
@@ -117,13 +138,16 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             "sync_executor_queued": lambda: executor._work_queue.qsize(),
         }
         publisher = asyncio.create_task(_publish_gauges(obs, gauges), name="gauge-publisher")
+        publisher.add_done_callback(_log_publisher_death)
         stack.push_async_callback(_cancel, publisher)
+        stack.callback(budget.start, loop)  # registered last: runs first, starts the shared clock
 
         yield Container(
             settings=settings,
             app_pool=app_pool,
             checkpointer_pool=cp_pool,
             checkpointer=checkpointer,
+            runs=runs,
             llm=llm,
             limits=limits,
             cpu_pool=cpu_pool,
@@ -131,6 +155,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             observability=obs,
             tools=tools,
             mcp=mcp,
+            shutdown_budget=budget,
         )
 
 
@@ -139,27 +164,44 @@ def _prime_models(llm: LlmRegistry, profiles: list[str]) -> None:
         llm.model(name)
 
 
-def _pool_stat(pool: AsyncConnectionPool | CheckpointerPool, key: str) -> GaugeSource:
+def _pool_stat(pool: AsyncConnectionPool[Any], key: str) -> GaugeSource:
     return lambda: pool.get_stats().get(key, 0)
 
 
-async def _shutdown_observability(obs: Observability, grace_s: float) -> None:
-    """`Observability.shutdown` blocks (exporters); it gets at most the shutdown grace."""
+def _restore_default_executor(
+    loop: asyncio.AbstractEventLoop, executor: ThreadPoolExecutor
+) -> None:
+    # uvloop exposes no public default executor to put back: give the loop a fresh stock one.
+    loop.set_default_executor(ThreadPoolExecutor(thread_name_prefix="asyncio"))
+    executor.shutdown(wait=False)
+
+
+async def _shutdown_observability(obs: Observability, budget: ShutdownBudget) -> None:
+    """`Observability.shutdown` blocks (exporters); it gets what is left of the shutdown budget."""
     try:
-        async with asyncio.timeout(grace_s):
+        async with asyncio.timeout_at(budget.deadline):
             await asyncio.to_thread(obs.shutdown)
     except TimeoutError:
-        logger.warning("observability shutdown exceeded %.0fs, abandoning flush", grace_s)
+        logger.warning("observability shutdown exceeded the shutdown grace, abandoning flush")
+
+
+def _sample(obs: Observability, sources: dict[str, GaugeSource]) -> None:
+    for name, source in sources.items():
+        obs.metrics.gauge(name, float(source()))
 
 
 async def _publish_gauges(obs: Observability, sources: dict[str, GaugeSource]) -> None:
     while True:
         await asyncio.sleep(GAUGE_INTERVAL_S)
-        for name, source in sources.items():
-            obs.metrics.gauge(name, float(source()))
+        _sample(obs, sources)
 
 
-async def _cancel(task: "asyncio.Task[None]") -> None:
+def _log_publisher_death(task: asyncio.Task[None]) -> None:
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.error("gauge publisher died", exc_info=exc)
+
+
+async def _cancel(task: asyncio.Task[None]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task

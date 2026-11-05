@@ -1,8 +1,11 @@
+import asyncio
+
 import pytest
 from pydantic import SecretStr
 
 from graph_agent._internal.bootstrap import open_container
 from graph_agent._internal.config.settings import DatabaseSettings, LimitsSettings, Settings
+from graph_agent._internal.runtime.checkpointer import PooledPostgresSaver
 
 
 @pytest.fixture
@@ -20,6 +23,7 @@ async def test_container_opens_pools_and_tears_down_cleanly(settings: Settings) 
         async with c.app_pool.connection() as conn:
             row = await (await conn.execute("select 1")).fetchone()
         assert row == (1,)
-        assert type(c.checkpointer).__name__ == "PooledPostgresSaver"
+        assert isinstance(c.checkpointer, PooledPostgresSaver)
+        assert c.runs is not None
     assert c.app_pool.closed and c.checkpointer_pool.closed
-    assert c.lag_sampler._task is None
+    assert not any(t.get_name() == "loop-lag-sampler" for t in asyncio.all_tasks())
