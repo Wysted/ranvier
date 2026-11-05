@@ -19,9 +19,7 @@ step "import-linter" uv run lint-imports
 run_pytest() {
     local rc=0
     uv run pytest -q -c pyproject.toml tests ../../examples/tests || rc=$?
-    # Exit 5 = "no tests collected".
-    # shortcut: tolerates an empty suite; drop the exit-5 case once the first unit test lands.
-    [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]
+    [ "$rc" -eq 0 ]
 }
 
 step "pytest (unit)" run_pytest

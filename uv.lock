@@ -598,6 +598,7 @@ source = { virtual = "." }
 dev = [
     { name = "blockbuster" },
     { name = "graph-agent", extra = ["anthropic", "ollama", "openai", "otel"] },
+    { name = "graph-agent-examples" },
     { name = "import-linter" },
     { name = "mypy" },
     { name = "pytest" },
@@ -612,6 +613,7 @@ dev = [
 dev = [
     { name = "blockbuster", specifier = ">=1.5" },
     { name = "graph-agent", extras = ["openai", "anthropic", "ollama", "otel"], editable = "packages/core" },
+    { name = "graph-agent-examples", editable = "examples" },
     { name = "import-linter", specifier = ">=2.15" },
     { name = "mypy", specifier = ">=2.4.0" },
     { name = "pytest", specifier = ">=9.1.1" },

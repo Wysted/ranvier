@@ -12,7 +12,8 @@ class State(TypedDict):
 
 def ask(state: State) -> dict[str, bool]:
     # Only the interrupt lives here: this node re-runs from the top on resume.
-    return {"approved": bool(interrupt(f"Approve: {state['request']}?"))}
+    # `is True`: a "no" or {"approved": false} answer must reject, not approve.
+    return {"approved": interrupt(f"Approve: {state['request']}?") is True}
 
 
 def finish(state: State) -> dict[str, str]:

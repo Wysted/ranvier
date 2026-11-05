@@ -46,6 +46,10 @@ class FlowTargetError(TypeError):
 async def to_builder(target: object, ctx: FlowContext) -> StateGraph[Any, Any, Any, Any]:
     """Resolve a flow target (StateGraph or sync/async factory of one) to its uncompiled builder."""
     if not isinstance(target, StateGraph) and callable(target):
+        try:
+            inspect.signature(target).bind(ctx)
+        except TypeError as exc:
+            raise FlowTargetError("target factory must accept one FlowContext argument") from exc
         if inspect.iscoroutinefunction(target):
             target = await target(ctx)
         else:  # sync factory may do I/O: keep it off the loop (blockbuster)

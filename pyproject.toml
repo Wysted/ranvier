@@ -10,10 +10,12 @@ members = ["packages/core", "examples"]
 
 [tool.uv.sources]
 graph-agent = { workspace = true }
+graph-agent-examples = { workspace = true }
 
 [dependency-groups]
 dev = [
     "graph-agent[openai,anthropic,ollama,otel]",
+    "graph-agent-examples",
     "blockbuster>=1.5",
     "import-linter>=2.15",
     "mypy>=2.4.0",
