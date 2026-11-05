@@ -291,8 +291,8 @@ Claims make both recovery paths idempotent: the job that loses the claim exits. 
 |---------|------|
 | `validate [--diagram] [--offline]` | Section 4 |
 | `run <flow> --input JSON [--thread ID] [--resume JSON] [--memory]` | Inline run printing events; `--memory` uses `InMemorySaver` and no database |
-| `serve` | uvicorn with the API |
-| `worker` | Procrastinate worker: execute, sweep, prune, crons |
+| `serve` | uvicorn with the API; SIGTERM/SIGINT drain inline runs (stream ends with `run_handed_over`) and exit 0; signal handlers cover the container close. Only `graph-agent serve` drains early: embedding `create_app` elsewhere drains at lifespan close |
+| `worker` | Procrastinate worker: execute, sweep, prune, crons; SIGTERM/SIGINT stop fetching, drain, wait for jobs, hand over, exit 0 |
 | `migrate` | Own SQL migrations, `checkpointer.setup()`, Procrastinate schema |
 | `crons` | Lists declared crons with next fire time (UTC) |
 | `usage [--since] [--by flow\|model\|agent]` | Tokens and indicative cost from the ledger |
@@ -315,7 +315,7 @@ Inline streamed runs execute in the API process; background runs and crons go th
 | `GET /threads/{thread_id}/state` | `values`, `next`, `interrupts`, `checkpoint_id` | 200 |
 | `DELETE /threads/{thread_id}` | Delete checkpoints and runs (refused while running); queued (pending) runs are discarded and their Procrastinate jobs exit at the claim (LOST) silently | 204 |
 
-Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`.
+Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`. After shutdown starts, inline runs get `503 shutting_down` (retryable).
 
 ### SSE events
 
@@ -330,7 +330,7 @@ Transport: FastAPI `EventSourceResponse` (as in agintis). Event id `{run_id}:{se
 | `custom` | `{ns, node, data}` | Payloads from `get_stream_writer()` |
 | `interrupt` | `{interrupts: [{id, value}]}` | One event per interrupted task (parallel interrupts give several events); the full pending set is `GET /threads/{id}/state` |
 | `end` | `{status, usage: {input_tokens, output_tokens, cached_input_tokens}}` | Terminal success, interrupt or cancel |
-| `error` | `{code, message, retryable}` | Terminal error |
+| `error` | `{code, message, retryable}` | Terminal error; a drained inline run ends with `{code: "run_handed_over", retryable: true, run_id}` and the client polls the run |
 
 State is JSON-serializable by convention; a value the encoder cannot serialize produces an `error` event, never a silent drop.
 
@@ -385,7 +385,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | CPU-heavy tools | `isolation = "process"`: `limits.cpu_workers` single-worker `ProcessPoolExecutor`s (explicit forkserver context), one call per slot; a timeout, caller cancellation or worker crash replaces only that slot's executor and kills its worker (`kill_workers` on 3.14, a backport over the private `_processes` on 3.13), so CPU calls of other runs are unaffected (S5) | `limits.cpu_workers` (2) |
 | Run timeout | `asyncio.timeout` around the stream; error `run_timeout` | `flows.<f>.timeout_s` (600) |
 | Node timeout | Native LangGraph 1.2 `add_node(..., timeout=TimeoutPolicy(...))` (async nodes) and `error_handler=` for compensation; the platform does not wrap nodes, the starter documents the pattern | set in the flow |
-| Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); release each drained run's lease (`release_for_drain`) and defer it; the next claim resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
+| Graceful shutdown | On SIGTERM/SIGINT (later signals are ignored and logged; SIGKILL forces), stop admission (`503 shutting_down`, retryable), call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); release each drained run's lease (`release_for_drain`) and defer it; the next claim resumes with `None` (S1); while draining, any cancellation of a run (including `GeneratorExit` when the server closes a stream) hands it over. uvicorn and Procrastinate wait `shutdown_grace_s - HANDOVER_MARGIN_S` (5 s reserved for the hand-over of runs cancelled at that timeout and for the telemetry flush); one `ShutdownBudget`, started at the first signal, bounds hand-over, `ActiveRuns.settled()` and the flush, and the lease sweep recovers whatever is still active at the deadline. Startup warns when that wait is shorter than a tool, MCP server or single model-call timeout (flows do not count: a drain waits one superstep), and warns "drain disabled" when `0 < grace <= margin`. The orchestrator's stop grace must exceed `shutdown_grace_s` (the starter uses 105 s). Pool workers ignore SIGINT/SIGTERM (the parent kills them) | `limits.shutdown_grace_s` (90) |
 | Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup. `AsyncPostgresSaver` takes a per-instance `asyncio.Lock` on every DB call (reads included; langgraph-checkpoint-postgres 3.2.0, issue #7259): the platform's saver subclass replaces it with a semaphore sized to the pool when built over a pool (each call gets its own pooled connection), `shortcut:` until upstream fixes it  Worker processes also hold one standalone Procrastinate LISTEN connection outside its pool (+1 in the budget), and a running sweep holds one dedicated lock connection (+1). One `PooledPostgresSaver` per process; measured 3.5-5x upstream's throughput at pool 5 and ~5x at pool 10, 2 ms RTT (S4). | `database.*_pool_max` (5, 10, 5) |
 | Loop health | Lag sampler (sleep drift every 1 s): gauge, warning over threshold, `/readyz` | `limits.loop_lag_warn_ms` (100) |
 | Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another, except that a transport failure after an MCP response started fails every in-flight call on that MCP server (each an error `ToolMessage`; the next call reconnects; mcp 2.3.0, python-sdk #1393, S2); supersteps are transactional | none |
