@@ -77,8 +77,9 @@ def test_bare_resume_needs_exactly_one_pending(pending: tuple[str, ...]) -> None
         ((I1,), {FOREIGN: "x"}),
         ((I1, I2), {I1: 1, FOREIGN: 2}),
         ((), {I1: 1}),
+        ((I1,), {1: "x"}),  # LangGraph raises an opaque TypeError on non-str keys
     ],
-    ids=["empty-map", "foreign-id", "partly-foreign", "nothing-pending"],
+    ids=["empty-map", "foreign-id", "partly-foreign", "nothing-pending", "non-str-key"],
 )
 def test_bad_id_maps_are_rejected(pending: tuple[str, ...], resume: object) -> None:
     with pytest.raises(RunError) as exc:

@@ -224,7 +224,9 @@ def _add_run(sub: SubparsersAction) -> None:
 
 
 async def _consume(events: "AsyncIterator[RunEvent]") -> int | None:
-    """Emit events up to the first terminal one; its exit code, or None if the stream was empty.
+    """Emit events up to the first terminal one; return its exit code.
+
+    None when no terminal event arrived.
 
     The caller closes the stream. An unserializable intermediate event stops consumption with
     exit 1 (`internal_error`); in database mode closing the stream cancels the run, so the CLI
@@ -374,8 +376,8 @@ async def _run_database(
             )
             async with aclosing(execute_run(container, run.run_id)) as events:
                 code = await _consume(events)
-            if code is None:  # empty stream: claim lost
-                print(f"run {run.run_id} was claimed by another worker", file=sys.stderr)
+            if code is None:  # no terminal event: the claim or lease was lost
+                print(f"run {run.run_id} lost its claim or lease", file=sys.stderr)
                 return 1
             return code
         except RunError as exc:

@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, Coroutine, Iterator, Mapping, Sequen
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, TypeGuard, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphDrained
@@ -488,7 +488,7 @@ async def pending_interrupts(checkpointer: Checkpointer, thread_id: uuid.UUID) -
 INTERRUPT_ID: Final = re.compile(r"[0-9a-f]{32}")
 
 
-def is_resume_map(resume: object) -> bool:
+def is_resume_map(resume: object) -> TypeGuard[Mapping[str, object]]:
     """Whether LangGraph reads `resume` as `{interrupt_id: value}` (`{}` included)."""
     return isinstance(resume, Mapping) and all(
         isinstance(k, str) and INTERRUPT_ID.fullmatch(k) for k in resume
@@ -510,7 +510,9 @@ def check_thread_command(pending: Sequence[str], *, input: object, resume: objec
         return
     if resume is None:
         return
-    if isinstance(resume, Mapping) and is_resume_map(resume):
+    if isinstance(resume, Mapping) and not all(isinstance(k, str) for k in resume):
+        raise RunError(ErrorCode.INVALID_REQUEST, "resume map keys must be strings")
+    if is_resume_map(resume):
         if not resume or not set(resume) <= set(pending):
             raise RunError(
                 ErrorCode.INVALID_REQUEST,
