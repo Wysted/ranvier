@@ -1,22 +1,49 @@
 """Tool registry: `[tools.*]` imported lazily and wrapped once with timeout, semaphore, isolation.
 
-Failures (exceptions, timeouts, crashed workers) become `ToolException`s, which the wrapper turns
-into error `ToolMessage`s for the model; they never propagate into the run.
+`_LimitedTool` delegates `ainvoke` to the original tool, so injected arguments (`ToolRuntime`,
+`InjectedState`, `InjectedToolCallId`), artifacts, `Command` results and the original error
+handling keep working. Pydantic validation errors propagate so `ToolNode` can show the model the
+detailed message. Any other failure (exception, timeout, crashed worker) becomes an error
+`ToolMessage` (or a `ToolException` when not called with a `ToolCall`); it never reaches the run.
+
+The semaphore wait does not count against `timeout_s` (same as the MCP port): the timeout bounds
+the execution only. `thread` isolation holds the permit until the thread really finishes: a
+timed-out thread cannot be stopped, so releasing earlier would let hung tools pile up threads.
+
+`process` isolation sends the tool input to the worker pickled and re-imports the tool there:
+injected or unpicklable arguments (state, runtime) fail and are reported as a tool error.
 """
 
 import asyncio
+import contextvars
+import functools
+import logging
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
+from langgraph.errors import GraphBubbleUp
+from pydantic import PrivateAttr, ValidationError
 
-from graph_agent._internal.config.manifest import ToolSpec, import_target
+from graph_agent._internal.config.manifest import (
+    DEFAULT_TOOL_MAX_CONCURRENCY,
+    ToolSpec,
+    import_target,
+)
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.limits import CpuPool
 
+logger = logging.getLogger(__name__)
+
+MAX_ERROR_CHARS = 200
+POOL_GRACE = 2
+Isolation = Literal["async", "thread", "process"]
+
 
 class ToolConfigError(ValueError):
-    """Invalid tool declaration; the message names the offending `tools.<name>` key."""
+    """Invalid tool declaration; the message names the offending tool."""
 
 
 def _has_async(tool: BaseTool) -> bool:
@@ -25,12 +52,110 @@ def _has_async(tool: BaseTool) -> bool:
     return type(tool)._arun is not BaseTool._arun  # default _arun just wraps the sync _run
 
 
-def _run_in_child(target: str, kwargs: dict[str, Any]) -> Any:
+def _has_sync(tool: BaseTool) -> bool:
+    # shortcut: only StructuredTool is checked; BaseTool subclasses always define `_run`
+    return tool.func is not None if isinstance(tool, StructuredTool) else True
+
+
+def _run_in_child(target: str, tool_input: Any) -> Any:
     """Runs inside a CpuPool worker, so it must stay module-level and importable."""
     tool = import_target(target)
     if not isinstance(tool, BaseTool):
         raise TypeError(f"{target!r} is not a langchain tool")
-    return asyncio.run(tool.ainvoke(kwargs))
+    return asyncio.run(tool.ainvoke(tool_input))
+
+
+def _is_tool_call(tool_input: Any) -> bool:
+    return isinstance(tool_input, dict) and tool_input.get("type") == "tool_call"
+
+
+class _LimitedTool(BaseTool):
+    inner: BaseTool
+    timeout_s: float
+    isolation: Isolation
+    target: str | None = None
+    _sem: asyncio.Semaphore = PrivateAttr()
+    _cpu_pool: CpuPool | None = PrivateAttr(default=None)
+
+    def __init__(
+        self,
+        inner: BaseTool,
+        *,
+        timeout_s: float,
+        max_concurrency: int,
+        isolation: Isolation,
+        target: str | None,
+        cpu_pool: CpuPool | None,
+    ) -> None:
+        super().__init__(
+            name=inner.name,
+            description=inner.description,
+            args_schema=inner.args_schema,
+            return_direct=inner.return_direct,
+            response_format=inner.response_format,
+            inner=inner,
+            timeout_s=timeout_s,
+            isolation=isolation,
+            target=target,
+        )
+        self._cpu_pool = cpu_pool
+        self._sem = asyncio.Semaphore(max_concurrency)
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError("platform tools are async only; use ainvoke")
+
+    def _release_after_thread(self, fut: "asyncio.Future[Any]") -> None:
+        self._sem.release()
+        if not fut.cancelled():
+            fut.exception()  # consume it: nobody awaits a timed-out thread any more
+
+    async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        await self._sem.acquire()
+        release = True
+        try:
+            async with asyncio.timeout(self.timeout_s) as cm:
+                if self.isolation == "async":
+                    return await self.inner.ainvoke(input, config, **kwargs)
+                if self.isolation == "thread":
+                    # A timed-out thread cannot be stopped: the permit is released by the
+                    # done-callback, when the thread really ends, not when we stop waiting.
+                    ctx = contextvars.copy_context()
+                    call = functools.partial(self.inner.invoke, input, config, **kwargs)
+                    fut = asyncio.get_running_loop().run_in_executor(None, ctx.run, call)
+                    fut.add_done_callback(self._release_after_thread)
+                    release = False
+                    return await asyncio.shield(fut)
+                assert self._cpu_pool is not None and self.target is not None
+                # the pool's own timeout is a backstop, so ours always fires first
+                return await self._cpu_pool.run(
+                    _run_in_child, self.target, input, timeout_s=self.timeout_s * POOL_GRACE
+                )
+        except TimeoutError as exc:
+            if cm.expired():  # a tool's own internal TimeoutError is a plain tool error
+                err = f"tool {self.name!r} timed out after {self.timeout_s}s"
+                logger.warning(err)
+                return self._error(input, err)
+            return self._failed(input, exc)
+        except (ValidationError, GraphBubbleUp):
+            raise  # ToolNode builds the model-facing validation error; interrupts must bubble
+        except Exception as exc:  # error isolation boundary: the model sees it, the run lives
+            return self._failed(input, exc)
+        finally:
+            if release:
+                self._sem.release()
+
+    def _failed(self, tool_input: Any, exc: Exception) -> Any:
+        logger.warning("tool %r failed", self.name, exc_info=exc)
+        # never repr(exc): it may carry URLs or tokens
+        detail = str(exc)[:MAX_ERROR_CHARS]
+        return self._error(tool_input, f"tool {self.name!r} failed: {type(exc).__name__}: {detail}")
+
+    def _error(self, tool_input: Any, message: str) -> Any:
+        if _is_tool_call(tool_input):
+            return ToolMessage(
+                message, tool_call_id=tool_input["id"], name=self.name, status="error"
+            )
+        raise ToolException(message)
 
 
 class ToolRegistry:
@@ -56,7 +181,14 @@ class ToolRegistry:
         tool = import_target(spec.target)
         if not isinstance(tool, BaseTool):
             raise ToolConfigError(f"tools.{name}.target {spec.target!r} is not a langchain tool")
-        wrapped = self._wrap(name, tool, spec, spec.target)
+        wrapped = self._wrap(
+            f"tools.{name}",
+            tool,
+            isolation=spec.isolation,
+            timeout_s=spec.timeout_s,
+            max_concurrency=spec.max_concurrency,
+            target=spec.target,
+        )
         self._by_name[name] = wrapped
         return wrapped
 
@@ -68,50 +200,34 @@ class ToolRegistry:
                 continue
             cached = self._by_object.get(id(item))
             if cached is None:
-                cached = (item, self._wrap(item.name, item, ToolSpec(target="x:x"), None))
+                cached = (item, self._wrap(f"tool object {item.name!r}", item))
                 self._by_object[id(item)] = cached
             out.append(cached[1])
         return out
 
-    def _wrap(self, key: str, tool: BaseTool, spec: ToolSpec, target: str | None) -> BaseTool:
-        isolation = spec.isolation
+    def _wrap(
+        self,
+        where: str,
+        tool: BaseTool,
+        *,
+        isolation: Isolation = "async",
+        timeout_s: float | None = None,
+        max_concurrency: int = DEFAULT_TOOL_MAX_CONCURRENCY,
+        target: str | None = None,
+    ) -> BaseTool:
+        """`where` labels the tool in errors: `tools.<name>` for manifest tools, else the object."""
+        key = f"{where}.isolation" if target else where
         if isolation == "async" and not _has_async(tool):
-            raise ToolConfigError(
-                f"tools.{key}.isolation: sync-only tool must declare isolation = 'thread'"
-            )
+            raise ToolConfigError(f"{key}: a sync-only tool must declare isolation = 'thread'")
+        if isolation == "thread" and not _has_sync(tool):
+            raise ToolConfigError(f"{key}: an async-only tool cannot use isolation = 'thread'")
         if isolation == "process" and (target is None or self._cpu_pool is None):
-            raise ToolConfigError(
-                f"tools.{key}.isolation: 'process' needs a manifest tool and a CPU pool"
-            )
-        if tool.args_schema is None:
-            raise ToolConfigError(f"tools.{key}: tool has no args_schema")
-        timeout_s = spec.timeout_s or self._limits.tool_timeout_s
-        sem = asyncio.Semaphore(spec.max_concurrency)
-        cpu_pool = self._cpu_pool
-
-        async def _call(**kwargs: Any) -> Any:
-            try:
-                async with sem, asyncio.timeout(timeout_s):
-                    if isolation == "async":
-                        return await tool.ainvoke(kwargs)
-                    if isolation == "thread":  # default executor is the bounded one (T09)
-                        return await asyncio.to_thread(tool.invoke, kwargs)
-                    assert cpu_pool is not None and target is not None
-                    return await cpu_pool.run(_run_in_child, target, kwargs, timeout_s=timeout_s)
-            except TimeoutError:
-                raise ToolException(f"tool {tool.name!r} timed out after {timeout_s}s") from None
-            except ToolException:
-                raise
-            except Exception as exc:  # error isolation boundary: the model sees it, the run lives
-                raise ToolException(f"tool {tool.name!r} failed: {exc!r}") from exc
-
-        return StructuredTool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            coroutine=_call,
-            handle_tool_error=True,
-            handle_validation_error=True,
-            return_direct=tool.return_direct,
-            response_format=tool.response_format,
+            raise ToolConfigError(f"{key}: 'process' needs a manifest tool and a CPU pool")
+        return _LimitedTool(
+            tool,
+            timeout_s=timeout_s or self._limits.tool_timeout_s,
+            max_concurrency=max_concurrency,
+            isolation=isolation,
+            target=target,
+            cpu_pool=self._cpu_pool,
         )
