@@ -21,6 +21,7 @@ from enum import StrEnum
 from typing import Any, Final, Literal, Protocol, TypeGuard, cast
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import CheckpointTuple
 from langgraph.errors import GraphDrained
 from langgraph.runtime import RunControl
 from langgraph.types import Command, StreamMode
@@ -53,6 +54,7 @@ from graph_agent._internal.runtime.runs import (
     RunError,
     RunsRepository,
     RunStatus,
+    ThreadPin,
 )
 from graph_agent._internal.usage import Counts, UsageCallback, sum_counts
 
@@ -356,20 +358,21 @@ async def execute_run(
         try:
             flow = await container.flows.get(run.flow)
             check_version(flow, run.flow_version)
-        except RunError as flow_error:  # flow_not_found, flow_build_failed, flow_version_mismatch
+            # The request-time check can be stale: runs queued behind an interrupted one.
+            initial = await _initial_input(container.checkpointer, run)
+        except RunError as run_error:  # flow_*, thread_interrupted, invalid_request
             await _stop_tasks(beat)
             ok = await _settle(
                 container,
                 attempt,
-                _finish(container, attempt, runs, ctx, token, RunStatus.ERROR, usage, flow_error),
+                _finish(container, attempt, runs, ctx, token, RunStatus.ERROR, usage, run_error),
             )
             if ok:
                 yield metadata_event(ctx)
-                yield _error_event(flow_error)
+                yield _error_event(run_error)
             return
 
         config = run_config(ctx, flow, run.metadata)
-        initial = await _initial_input(container.checkpointer, run)
         queue: asyncio.Queue[RunEvent] = asyncio.Queue(RUN_EVENT_BUFFER)
         with container.active_runs.track() as control:
             stream = stream_graph(
@@ -500,11 +503,17 @@ def _count_attempt(
         )
 
 
+# Metadata namespaces the platform and LangChain/LangGraph read: a client key there could spoof the
+# usage attribution (`graph_agent_agent`) or the stream mapping (`langgraph_*`).
+_RESERVED_METADATA_PREFIXES: Final = ("graph_agent_", "ls_", "langgraph_")
+
+
 def run_config(ctx: RunContext, flow: CompiledFlow, metadata: dict[str, Any]) -> RunnableConfig:
     """The `astream` config of one run; platform keys win so a client cannot spoof `run_id`."""
+    client = {k: v for k, v in metadata.items() if not k.startswith(_RESERVED_METADATA_PREFIXES)}
     config: RunnableConfig = {
         "configurable": {"thread_id": ctx.thread_id},
-        "metadata": {**metadata, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
+        "metadata": {**client, "run_id": ctx.run_id, "thread_id": ctx.thread_id},
     }
     if flow.max_concurrency is not None:
         config["max_concurrency"] = flow.max_concurrency
@@ -513,7 +522,12 @@ def run_config(ctx: RunContext, flow: CompiledFlow, metadata: dict[str, Any]) ->
 
 async def pending_interrupts(checkpointer: Checkpointer, thread_id: uuid.UUID) -> tuple[str, ...]:
     """Ids of the interrupts the thread's latest checkpoint is still waiting on."""
-    latest = await checkpointer.aget_tuple({"configurable": {"thread_id": str(thread_id)}})
+    return _pending_ids(
+        await checkpointer.aget_tuple({"configurable": {"thread_id": str(thread_id)}})
+    )
+
+
+def _pending_ids(latest: CheckpointTuple | None) -> tuple[str, ...]:
     if latest is None:
         return ()
     ids: list[str] = []
@@ -565,17 +579,59 @@ def check_thread_command(pending: Sequence[str], *, input: object, resume: objec
         )
 
 
+def check_tenant(pin: ThreadPin, tenant_id: str | None) -> None:
+    """A tenant sees only its own threads (a foreign one looks absent); `None` sees all."""
+    if tenant_id is not None and pin.tenant_id != tenant_id:
+        raise RunError(ErrorCode.NOT_FOUND, "thread not found")
+
+
+async def prepare_thread_run(
+    container: RunnerResources,
+    runs: RunsRepository,
+    *,
+    flow: str,
+    thread_id: uuid.UUID,
+    tenant_id: str | None,
+    input: object,
+    resume: object,
+) -> ThreadPin:
+    """Request-time checks of a run on a thread; returns what the new row pins.
+
+    A fast fail only: `execute_run` re-checks the thread command when the run starts. Used by the
+    API and the CLI so both reject the same way (raises `RunError`).
+    """
+    compiled = await container.flows.get(flow)  # flow_not_found / flow_build_failed
+    pin = await runs.thread_pin(thread_id)
+    if pin is None:  # first run of the thread: it fixes flow, version and tenant
+        pending: tuple[str, ...] = ()
+        pin = ThreadPin(flow, compiled.version, tenant_id)
+    else:
+        check_tenant(pin, tenant_id)
+        if pin.flow != flow:
+            raise RunError(ErrorCode.INVALID_REQUEST, f"thread belongs to flow {pin.flow!r}")
+        check_version(compiled, pin.flow_version)  # flow_version_mismatch
+        pending = await pending_interrupts(container.checkpointer, thread_id)
+    check_thread_command(pending, input=input, resume=resume)
+    return pin
+
+
 async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
-    """`None` if the latest checkpoint already carries this run_id (recovery or drain re-claim)."""
+    """`None` if the latest checkpoint already carries this run_id (recovery or drain re-claim).
+
+    Otherwise the thread-command rule runs again (`check_thread_command`, raises `RunError`): the
+    request-time check cannot see a sibling run queued earlier that ended up interrupted.
+    """
     latest = await checkpointer.aget_tuple({"configurable": {"thread_id": str(run.thread_id)}})
     if latest is not None and latest.metadata.get("run_id") == str(run.run_id):
         return None
+    resume = None
     if run.command is not None:
         # Stored as {"resume": ...} (api.dto.ResumeCommand).
         if not isinstance(run.command, dict) or "resume" not in run.command:
             raise RuntimeError(f"run {run.run_id}: stored command has no 'resume'")
-        return Command(resume=run.command["resume"])
-    return run.input
+        resume = run.command["resume"]
+    check_thread_command(_pending_ids(latest), input=run.input, resume=resume)
+    return run.input if run.command is None else Command(resume=resume)
 
 
 async def _pump(

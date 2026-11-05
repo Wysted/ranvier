@@ -27,6 +27,7 @@ from graph_agent._internal.runtime.flows import CompiledFlow
 from graph_agent._internal.runtime.runner import (
     ActiveRuns,
     execute_run,
+    run_config,
     settle_runs,
     start_drain,
     stream_graph,
@@ -270,7 +271,9 @@ async def test_memory_mode_raises_loudly() -> None:
 async def test_initial_input_rule() -> None:
     saver = InMemorySaver()
     run = _run("ask", command={"resume": "x"}, input=None)
-    assert isinstance(await runner._initial_input(saver, run), Command)  # no checkpoint yet
+    with pytest.raises(RunError) as ei:  # nothing to resume: the thread rule applies at execution
+        await runner._initial_input(saver, run)
+    assert ei.value.code is ErrorCode.INVALID_REQUEST
     assert await runner._initial_input(saver, _run("ask")) == {"x": 0}
     compiled = _compiled(_builder(_work), saver)
     cfg: Any = {
@@ -283,6 +286,22 @@ async def test_initial_input_rule() -> None:
     assert await runner._initial_input(saver, other) == {"x": 0}  # new run on the thread
     with pytest.raises(RuntimeError, match="resume"):
         await runner._initial_input(saver, _run("ask", command={"oops": 1}, input=None))
+
+
+def test_run_config_drops_reserved_client_metadata() -> None:
+    client = {
+        "graph_agent_agent": "spoofed",
+        "ls_provider": "x",
+        "langgraph_node": "x",
+        "team": "billing",
+        "run_id": "spoofed",
+    }
+    flow = _compiled(_builder(_work), InMemorySaver())
+    assert run_config(_ctx(), flow, client)["metadata"] == {
+        "team": "billing",
+        "run_id": "r1",
+        "thread_id": "t1",
+    }
 
 
 # --- cancellation-safe cleanup, lease loss, backpressure, usage ------------------------------

@@ -96,3 +96,40 @@ async def test_a_send_that_never_returns_drops_the_stream_and_closes_it(
     async with asyncio.timeout(2):
         await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
     assert inner.closed
+
+
+async def test_ping_keeps_a_silent_stream_alive_and_the_close_cancels_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(routes, "SSE_PING_INTERVAL_S", 0.02)
+    closed = False
+    release = asyncio.Event()
+
+    async def slow() -> AsyncGenerator[Any]:
+        nonlocal closed
+        try:
+            yield UpdatesEvent((), "n", {})
+            await release.wait()  # a node that stays silent
+            yield EndEvent("success", UsageTotals(0, 0, 0))
+        finally:
+            closed = True
+
+    agen = slow()
+    frames = _frames(agen, await anext(agen), uuid.uuid4())
+    chunks = [await anext(frames)]  # the first event
+    chunks += [await anext(frames), await anext(frames)]  # two pings while the node is silent
+    assert chunks[1:] == [routes._SSE_PING] * 2
+    release.set()
+    assert b"event: end" in await anext(frames)
+    await frames.aclose()
+    assert closed
+
+    # Leaving while the next event is pending: the wait is cancelled before the stream is closed.
+    closed = False
+    release.clear()
+    agen = slow()
+    frames = _frames(agen, await anext(agen), uuid.uuid4())
+    await anext(frames)
+    assert await anext(frames) == routes._SSE_PING
+    await frames.aclose()  # would raise "asynchronous generator is already running" otherwise
+    assert closed

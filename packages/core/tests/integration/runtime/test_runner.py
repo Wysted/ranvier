@@ -8,6 +8,7 @@ from typing import Any, TypedDict
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 from psycopg_pool import AsyncConnectionPool
 
 from graph_agent._internal.config.manifest import FlowSpec
@@ -16,7 +17,7 @@ from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import execute_run
+from graph_agent._internal.runtime.runner import execute_run, pending_interrupts
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository, RunStatus
 from integration._resources import Resources
 
@@ -40,6 +41,10 @@ async def _slow(state: State) -> State:
     return {}
 
 
+async def _ask(state: State) -> State:
+    return {"x": interrupt("go?")}
+
+
 def _builder(fn: Any) -> StateGraph[State, Any, State, State]:
     return StateGraph(State).add_node("n", fn).add_edge(START, "n").add_edge("n", END)
 
@@ -49,6 +54,7 @@ def user_module() -> Iterator[None]:
     mod = types.ModuleType(MODULE)
     mod.quick = _builder(_quick)  # type: ignore[attr-defined]
     mod.slow = _builder(_slow)  # type: ignore[attr-defined]
+    mod.ask = _builder(_ask)  # type: ignore[attr-defined]
     sys.modules[MODULE] = mod
     yield
     del sys.modules[MODULE]
@@ -67,7 +73,9 @@ async def pool(clean_database: str) -> AsyncIterator[AsyncConnectionPool]:
 @pytest.fixture
 def res(pool: AsyncConnectionPool, user_module: None) -> Resources:
     saver = InMemorySaver()
-    flows = {n: FlowSpec(target=f"{MODULE}:{n}", version=FLOW_VERSION) for n in ("quick", "slow")}
+    flows = {
+        n: FlowSpec(target=f"{MODULE}:{n}", version=FLOW_VERSION) for n in ("quick", "slow", "ask")
+    }
     ctx_factory: Any = lambda name: object()  # noqa: E731
     return Resources(SETTINGS, RunsRepository(pool), FlowRegistry(flows, saver, ctx_factory), saver)
 
@@ -171,3 +179,28 @@ async def test_cancelling_the_consumer_twice_records_cancelled(
         await task
     await res.active_runs.settled()
     assert await _status(pool, run_id) == RunStatus.CANCELLED
+
+
+async def test_queued_input_behind_an_interrupted_run_ends_thread_interrupted(
+    res: Resources, pool: AsyncConnectionPool
+) -> None:
+    assert res.runs is not None
+    thread = uuid.uuid4()
+    # Both pass the request-time check (nothing pending yet); the first then interrupts.
+    first, second = await _new(res, "ask", thread), await _new(res, "ask", thread)
+    await _events(res, first)
+    assert await _status(pool, first) == RunStatus.INTERRUPTED
+    events = await _events(res, second)
+    assert [type(e).__name__ for e in events] == ["MetadataEvent", "ErrorEvent"]
+    assert isinstance(events[-1], ErrorEvent) and events[-1].code == ErrorCode.THREAD_INTERRUPTED
+    assert await _status(pool, second) == RunStatus.ERROR
+    # The first run's interrupt is untouched: resuming it completes the thread.
+    (interrupt_id,) = await pending_interrupts(res.checkpointer, thread)
+    resume = await res.runs.create(
+        thread_id=thread,
+        flow="ask",
+        flow_version=FLOW_VERSION,
+        command={"resume": {interrupt_id: 7}},
+    )
+    final = (await _events(res, resume.run_id))[-1]
+    assert isinstance(final, EndEvent) and final.status == "success"

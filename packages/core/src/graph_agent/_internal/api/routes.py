@@ -1,6 +1,7 @@
 """HTTP endpoints (design section 6): runs, SSE streams, thread state, admission."""
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -28,12 +29,11 @@ from graph_agent._internal.api.dto import (
 from graph_agent._internal.bootstrap import Container
 from graph_agent._internal.limits import ShuttingDown, TooManyRuns
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
-from graph_agent._internal.runtime.flows import check_version
 from graph_agent._internal.runtime.runner import (
     ActiveRuns,
-    check_thread_command,
+    check_tenant,
     execute_run,
-    pending_interrupts,
+    prepare_thread_run,
 )
 from graph_agent._internal.runtime.runs import (
     ErrorCode,
@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # bounded queue would otherwise hold the thread and keep the lease alive behind a stuck socket.
 SSE_SEND_TIMEOUT_S: Final = 30.0
 READY_DB_TIMEOUT_S: Final = 2.0
+# Proxies with an idle timeout cut a stream that stays silent through a long node.
+SSE_PING_INTERVAL_S: Final = 15.0
+_SSE_PING: Final = b": ping\n\n"  # an SSE comment: clients ignore it
 _SSE_HEADERS: Final = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 router = APIRouter(dependencies=[Depends(require_principal)])
@@ -73,53 +76,39 @@ def _runs(container: Container) -> RunsRepository:
 # -- helpers --------------------------------------------------------------------------------------
 
 
-def _own(pin: ThreadPin, principal: Principal) -> None:
-    """A tenant sees only its own threads; a foreign one looks absent."""
-    if principal.tenant_id is not None and pin.tenant_id != principal.tenant_id:
-        raise RunError(ErrorCode.NOT_FOUND, "thread not found")
+async def _prepare(
+    container: Container, principal: Principal, thread_id: uuid.UUID, req: RunRequest
+) -> ThreadPin:
+    return await prepare_thread_run(
+        container,
+        _runs(container),
+        flow=req.flow,
+        thread_id=thread_id,
+        tenant_id=principal.tenant_id,
+        input=req.input,
+        resume=None if req.command is None else req.command.resume,
+    )
 
 
 async def _pin(container: Container, principal: Principal, thread_id: uuid.UUID) -> ThreadPin:
     pin = await _runs(container).thread_pin(thread_id)
     if pin is None:
         raise RunError(ErrorCode.NOT_FOUND, "thread not found")
-    _own(pin, principal)
+    check_tenant(pin, principal.tenant_id)
     return pin
-
-
-async def _check_request(
-    container: Container, principal: Principal, thread_id: uuid.UUID, req: RunRequest
-) -> tuple[int, str | None]:
-    """Validate a run request against the thread; returns the (flow_version, tenant_id) to pin."""
-    compiled = await container.flows.get(req.flow)  # flow_not_found / flow_build_failed
-    pin = await _runs(container).thread_pin(thread_id)
-    if pin is None:
-        pending: tuple[str, ...] = ()
-        version, tenant = compiled.version, principal.tenant_id
-    else:
-        _own(pin, principal)
-        if pin.flow != req.flow:
-            raise RunError(ErrorCode.INVALID_REQUEST, f"thread belongs to flow {pin.flow!r}")
-        check_version(compiled, pin.flow_version)  # flow_version_mismatch
-        pending = await pending_interrupts(container.checkpointer, thread_id)
-        version, tenant = pin.flow_version, pin.tenant_id
-    resume = None if req.command is None else req.command.resume
-    check_thread_command(pending, input=req.input, resume=resume)
-    return version, tenant
 
 
 async def _insert(
     container: Container,
     thread_id: uuid.UUID,
     req: RunRequest,
-    pinned: tuple[int, str | None],
+    pin: ThreadPin,
 ) -> Run:
-    version, tenant = pinned
     return await _runs(container).create(
         thread_id=thread_id,
         flow=req.flow,
-        flow_version=version,
-        tenant_id=tenant,
+        flow_version=pin.flow_version,
+        tenant_id=pin.tenant_id,
         input=req.input,
         command=None if req.command is None else req.command.model_dump(),
         metadata=req.metadata,
@@ -129,6 +118,18 @@ async def _insert(
 # -- SSE ------------------------------------------------------------------------------------------
 
 
+async def _reap(task: "asyncio.Task[Any]") -> None:
+    """Cancel `task` and wait until it is done, however often this task is cancelled meanwhile.
+
+    The caller is already unwinding (its own cancel or close keeps propagating after this), and a
+    cancelled anyio scope re-cancels every `await` (1q): waiting once would return too early.
+    """
+    task.cancel()
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait({task})
+
+
 async def _frames(
     agen: AsyncGenerator[Any], first: Any, run_id: uuid.UUID
 ) -> AsyncGenerator[bytes]:
@@ -136,14 +137,27 @@ async def _frames(
     encoder = SseEncoder(run_id)
     terminal = False
     event = first
+    # The next event is awaited in a task so the wait can time out into a keepalive.
+    pending: asyncio.Task[Any] | None = None
     async with aclosing(agen):  # leaving early (encoder failure, disconnect) cancels the run
-        while event is not None:
-            frame = encoder.encode(event)
-            yield format_sse_event(data_str=frame.raw_data, event=frame.event, id=frame.id)
-            if frame.event == "error" or isinstance(event, EndEvent | ErrorEvent):
-                terminal = True  # an encoder `error` frame also ends the stream
-                break
-            event = await anext(agen, None)
+        try:
+            while event is not None:
+                frame = encoder.encode(event)
+                yield format_sse_event(data_str=frame.raw_data, event=frame.event, id=frame.id)
+                if frame.event == "error" or isinstance(event, EndEvent | ErrorEvent):
+                    terminal = True  # an encoder `error` frame also ends the stream
+                    break
+                pending = asyncio.ensure_future(anext(agen, None))
+                while not (await asyncio.wait({pending}, timeout=SSE_PING_INTERVAL_S))[0]:
+                    yield _SSE_PING
+                ready, pending = pending, None  # a failure propagates; the finally has nothing
+                event = ready.result()
+        finally:
+            if pending is not None:
+                # Before `aclose`, which would fail with "generator already running" otherwise.
+                await _reap(pending)
+                if not pending.cancelled() and (exc := pending.exception()) is not None:
+                    logger.error("run %s: stream failed while closing", run_id, exc_info=exc)
     if not terminal:
         # Drained for shutdown (or the claim was lost): the run goes on elsewhere; the client polls.
         frame = encoder.handed_over()
@@ -152,9 +166,6 @@ async def _frames(
 
 class _SseResponse(StreamingResponse):
     """`text/event-stream` with a per-send timeout and a guaranteed close of the run's stream."""
-
-    # shortcut: no SSE ping; proxies with an idle timeout shorter than the longest silent node
-    # cancel inline runs; add a 15 s ping before the deployment docs (T34/T35)
 
     media_type = "text/event-stream"
 
@@ -215,7 +226,7 @@ async def _cancel_run(container: Container, run: Run) -> None:
 async def _stream(
     container: Container, principal: Principal, thread_id: uuid.UUID, req: RunRequest
 ) -> _SseResponse:
-    pinned = await _check_request(container, principal, thread_id, req)
+    pin = await _prepare(container, principal, thread_id, req)
     async with AsyncExitStack() as stack:
         try:
             await stack.enter_async_context(container.limits.admit())
@@ -223,7 +234,7 @@ async def _stream(
             raise RunError(ErrorCode.TOO_MANY_RUNS, str(exc), retryable=True) from None
         except ShuttingDown as exc:
             raise RunError(ErrorCode.SHUTTING_DOWN, str(exc), retryable=True) from None
-        run = await _insert(container, thread_id, req, pinned)
+        run = await _insert(container, thread_id, req, pin)
         agen = execute_run(container, run.run_id, stream_modes=req.stream_mode)
         try:
             # The claim (thread_busy) happens before the first event: still a plain HTTP error.
@@ -247,7 +258,7 @@ async def _background(
     if queue is None:
         raise RunError(ErrorCode.QUEUE_UNAVAILABLE, "no job queue in this process", retryable=True)
     run = await _insert(
-        container, thread_id, req, await _check_request(container, principal, thread_id, req)
+        container, thread_id, req, await _prepare(container, principal, thread_id, req)
     )
     try:
         await queue.defer(run.run_id, run.thread_id)
