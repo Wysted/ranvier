@@ -1,7 +1,12 @@
 import pytest
-from fastapi import Request
+from fastapi import FastAPI, Request
 
-from graph_agent._internal.api.auth import AuthError, Principal, build_authenticator
+from graph_agent._internal.api.auth import (
+    AuthError,
+    Principal,
+    build_authenticator,
+    require_principal,
+)
 from graph_agent._internal.config.settings import ApiKeyRef, ApiSettings
 
 
@@ -14,8 +19,12 @@ async def good_hook(request: Request) -> Principal:
     return Principal("hooked", "t1")
 
 
-def bad_hook(request: Request) -> str:
+async def bad_hook(request: Request) -> str:
     return "nope"
+
+
+def sync_hook(request: Request) -> Principal:
+    return Principal("synced")
 
 
 not_callable = 1
@@ -26,7 +35,7 @@ async def test_none_on_loopback() -> None:
     assert (await auth.authenticate(_request())).subject == "anonymous"
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "example.com"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "10.0.0.5", "example.com"])
 def test_none_refused_off_loopback(host: str) -> None:
     with pytest.raises(ValueError, match="loopback"):
         build_authenticator(ApiSettings(host=host))
@@ -84,3 +93,37 @@ async def test_hook_wrong_return_type() -> None:
 def test_hook_build_failures(target: str) -> None:
     with pytest.raises(ValueError, match="auth hook"):
         build_authenticator(ApiSettings(auth=target))
+
+
+async def test_sync_hook() -> None:
+    auth = build_authenticator(ApiSettings(auth=f"{__name__}:sync_hook"))
+    assert await auth.authenticate(_request()) == Principal("synced")
+
+
+async def test_require_principal() -> None:
+    app = FastAPI()
+    app.state.authenticator = build_authenticator(ApiSettings())
+    request = Request({"type": "http", "headers": [], "app": app})
+    assert (await require_principal(request)).subject == "anonymous"
+
+
+def test_api_keys_duplicate_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_KEY_A", "same")
+    monkeypatch.setenv("TEST_KEY_B", " same\n")
+    with pytest.raises(ValueError, match=r"alice.*bob") as exc:
+        build_authenticator(_keys_settings())
+    assert "same" not in str(exc.value)
+
+
+async def test_api_keys_env_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_KEY_A", "secret-a\n")
+    monkeypatch.setenv("TEST_KEY_B", "secret-b")
+    auth = build_authenticator(_keys_settings())
+    assert (await auth.authenticate(_request("Bearer secret-a"))).subject == "alice"
+
+
+def test_api_keys_whitespace_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TEST_KEY_A", " \n")
+    monkeypatch.setenv("TEST_KEY_B", "x")
+    with pytest.raises(ValueError, match="TEST_KEY_A"):
+        build_authenticator(_keys_settings())

@@ -1,5 +1,6 @@
 """Principal and the three authenticators (OD-2): none, static API keys, module hook."""
 
+import hashlib
 import hmac
 import importlib
 import inspect
@@ -7,8 +8,9 @@ import ipaddress
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
+import anyio.to_thread
 from fastapi import Request
 
 from graph_agent._internal.config.settings import AUTH_API_KEYS, AUTH_NONE, ApiSettings
@@ -18,7 +20,7 @@ _BEARER_PREFIX = "bearer "
 _LOCALHOST = "localhost"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Principal:
     subject: str
     tenant_id: str | None = None
@@ -58,18 +60,22 @@ class _NoAuth:
         return _ANONYMOUS
 
 
+def _digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode()).digest()
+
+
 class _ApiKeys:
     def __init__(self, keys: list[tuple[bytes, Principal]]) -> None:
-        self._keys = keys
+        self._keys = keys  # (sha256 digest, principal): raw keys are not kept in memory
 
     async def authenticate(self, request: Request) -> Principal:
         header = request.headers.get("authorization", "")
         if not header.lower().startswith(_BEARER_PREFIX):
             raise AuthError()
-        token = header[len(_BEARER_PREFIX) :].strip().encode()
+        token = _digest(header[len(_BEARER_PREFIX) :].strip())
         found: Principal | None = None
-        for key, principal in self._keys:  # no early exit: timing does not reveal which key matched
-            if hmac.compare_digest(token, key):
+        for digest, principal in self._keys:  # no early exit: timing does not reveal the match
+            if hmac.compare_digest(token, digest):
                 found = principal
         if found is None:
             raise AuthError()
@@ -81,9 +87,13 @@ class _Hooked:
         self._hook = hook
 
     async def authenticate(self, request: Request) -> Principal:
-        result = self._hook(request)
-        if inspect.isawaitable(result):
-            result = await result
+        result: Any
+        if inspect.iscoroutinefunction(self._hook):
+            result = await self._hook(request)
+        else:  # a sync hook may do I/O: keep it off the event loop
+            result = await anyio.to_thread.run_sync(self._hook, request)
+            if inspect.isawaitable(result):  # callable object with an async __call__
+                result = await result
         if not isinstance(result, Principal):
             raise TypeError(f"auth hook must return a Principal, got {type(result).__name__}")
         return result
@@ -97,8 +107,10 @@ def _load_hook(target: str) -> _Hook:
         raise ValueError(f"cannot import auth hook {target!r}: {exc}") from exc
     if not callable(hook):
         raise ValueError(f"auth hook {target!r} is not callable")
-    # shortcut: only callability is checked at build time, the return type is checked per call.
-    return hook  # type: ignore[no-any-return]
+    # shortcut: return type checked per call (a build-time check would need a request),
+    # upgrade if hooks gain a typed protocol
+    checked: _Hook = hook
+    return checked
 
 
 def build_authenticator(settings: ApiSettings) -> Authenticator:
@@ -113,11 +125,16 @@ def build_authenticator(settings: ApiSettings) -> Authenticator:
         return _NoAuth()
     if settings.auth == AUTH_API_KEYS:
         keys: list[tuple[bytes, Principal]] = []
+        owners: dict[bytes, str] = {}
         for subject, ref in settings.keys.items():
-            value = os.environ.get(ref.key_env)
+            value = os.environ.get(ref.key_env, "").strip()
             if not value:
                 raise ValueError(f"api.keys.{subject}: env var {ref.key_env!r} is unset or empty")
-            keys.append((value.encode(), Principal(subject, ref.tenant_id)))
+            digest = _digest(value)
+            if digest in owners:
+                raise ValueError(f"api.keys: {owners[digest]!r} and {subject!r} share a key value")
+            owners[digest] = subject
+            keys.append((digest, Principal(subject, ref.tenant_id)))
         return _ApiKeys(keys)
     return _Hooked(_load_hook(settings.auth))
 
