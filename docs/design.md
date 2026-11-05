@@ -74,7 +74,7 @@ graph_agent/
       pool.py             # psycopg pools (app, checkpointer) and budget logging
       migrate.py          # applies migrations/*.sql under an advisory lock (OD-5)
       migrations/         # 0001_init.sql: runs, usage
-    llm.py                # profiles -> init_chat_model, one httpx client per provider
+    llm.py                # profiles -> init_chat_model, one shared pool per provider (S3), models cached per profile
     limits.py             # semaphores, admission, bounded thread/process executors, loop lag
     usage.py              # ledger callback, repository, genai-prices at read time
     observability/
@@ -116,7 +116,7 @@ graph_agent/
 | C5c | Provider integrations in `llm` only | `langchain_openai`, `langchain_anthropic`, `langchain_ollama` only in `llm` (added after the T02 review) |
 | C6 | Tracing behind its port | `opentelemetry`, `openinference` only in `observability.otlp`; only `observability.tracing` imports `otlp` (lazily) |
 
-Ruff `banned-api` (import-linter cannot target external subpackages): `mcp` and `httpx2` outside `agents/mcp.py` (tests excepted); `langchain.mcp`, `fastmcp`, `langchain_mcp_adapters` (archived), `langgraph.prebuilt.create_react_agent`, `langgraph_supervisor`, `asyncpg`, `fastapi.responses.ORJSONResponse` (deprecated) everywhere.
+Ruff `banned-api` (import-linter cannot target external subpackages): `mcp` outside `agents/mcp.py` and `httpx2` outside `agents/mcp.py` and `llm.py` (tests excepted; line-level `# noqa: TID251` on the allowed imports); `langchain.mcp`, `fastmcp`, `langchain_mcp_adapters` (archived), `langgraph.prebuilt.create_react_agent`, `langgraph_supervisor`, `asyncpg`, `fastapi.responses.ORJSONResponse` (deprecated) everywhere.
 
 ## 3. Public API
 
@@ -321,7 +321,7 @@ Transport: FastAPI `EventSourceResponse` (as in agintis). Event id `{run_id}:{se
 | `values` | `{ns, values}` | `values` mode |
 | `messages` | `{ns, node, id, type, content, tool_call_chunks}` | `messages` mode, LLM chunks only |
 | `custom` | `{ns, node, data}` | Payloads from `get_stream_writer()` |
-| `interrupt` | `{interrupts: [{id, value}]}` | Run paused |
+| `interrupt` | `{interrupts: [{id, value}]}` | One event per interrupted task (parallel interrupts give several events); the full pending set is `GET /threads/{id}/state` |
 | `end` | `{status, usage: {input_tokens, output_tokens, cached_input_tokens}}` | Terminal success, interrupt or cancel |
 | `error` | `{code, message, retryable}` | Terminal error |
 
