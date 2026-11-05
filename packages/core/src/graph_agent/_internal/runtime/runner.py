@@ -83,7 +83,11 @@ STATUS_RELEASED: Final = "released"  # the attempt ended without a terminal writ
 class RunQueue(Protocol):
     """Defers `execute_run` for a run (T24); background endpoints and the drain use it."""
 
-    async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None: ...
+    async def defer(
+        self, run_id: uuid.UUID, thread_id: uuid.UUID, *, recovery: bool = False
+    ) -> None:
+        """`recovery=True`: a run that was `running` (hand-over, lease re-defer) jumps the queue."""
+        ...
 
 
 class ActiveRuns:
@@ -731,7 +735,7 @@ async def _hand_over(
             )
         else:
             try:
-                await container.queue.defer(run.run_id, run.thread_id)
+                await container.queue.defer(run.run_id, run.thread_id, recovery=True)
             except Exception:  # the lease is already expired: the orphan sweep re-defers it
                 logger.exception("run %s: could not defer after drain", run.run_id)
     finally:

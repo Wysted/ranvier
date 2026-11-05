@@ -214,7 +214,9 @@ class FakeRuns:
 class FakeQueue:
     deferred: list[tuple[uuid.UUID, uuid.UUID]] = field(default_factory=list)
 
-    async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None:
+    async def defer(
+        self, run_id: uuid.UUID, thread_id: uuid.UUID, *, recovery: bool = False
+    ) -> None:
         self.deferred.append((run_id, thread_id))
 
 
