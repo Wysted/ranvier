@@ -24,6 +24,9 @@ class PooledPostgresSaver(AsyncPostgresSaver):
             self.lock = asyncio.Semaphore(self.conn.max_size)  # type: ignore[assignment]
 
 
+type Checkpointer = PooledPostgresSaver | InMemorySaver
+
+
 def create_checkpointer(pool: CheckpointerPool) -> PooledPostgresSaver:
     """Call from inside the running loop: upstream captures `asyncio.get_running_loop()`."""
     return PooledPostgresSaver(pool)
