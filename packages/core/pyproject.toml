@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Platform package and starter for general AI flows on LangGraph"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.143.2",
-    "genai-prices>=0.0.60",
+    "fastapi>=0.162.0,<0.163",
+    "genai-prices>=0.2.1,<0.3",
     "httpx>=0.28.1,<1",
     "langchain==1.4.*",
     "langgraph>=1.2.15,<2",
@@ -16,7 +16,7 @@ dependencies = [
     "pydantic>=2.12,<3",
     "pydantic-settings>=2.16.0",
     "pyyaml>=6,<7",
-    "uvicorn>=0.54.0",
+    "uvicorn[standard]>=0.54.0,<0.55",
 ]
 
 [project.optional-dependencies]

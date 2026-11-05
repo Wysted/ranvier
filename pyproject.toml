@@ -13,7 +13,7 @@ graph-agent = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "graph-agent",
+    "graph-agent[openai,anthropic,ollama,otel]",
     "blockbuster>=1.5",
     "import-linter>=2.15",
     "mypy>=2.4.0",
