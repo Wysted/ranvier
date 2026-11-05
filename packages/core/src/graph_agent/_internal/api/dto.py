@@ -6,6 +6,7 @@ from datetime import datetime
 from http import HTTPStatus
 from typing import Any, Final, Literal, Self, assert_never
 
+from fastapi.responses import JSONResponse
 from fastapi.sse import ServerSentEvent
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticSerializationError, to_json
@@ -43,7 +44,25 @@ ERROR_STATUS: Final[dict[ErrorCode, HTTPStatus]] = {
     ErrorCode.FLOW_BUILD_FAILED: HTTPStatus.SERVICE_UNAVAILABLE,
     ErrorCode.ORPHAN_RETRIES_EXHAUSTED: HTTPStatus.INTERNAL_SERVER_ERROR,
     ErrorCode.INTERNAL_ERROR: HTTPStatus.INTERNAL_SERVER_ERROR,
+    ErrorCode.QUEUE_UNAVAILABLE: HTTPStatus.SERVICE_UNAVAILABLE,
+    # Only ever an SSE `error` frame (the response is already 200); 503 is for completeness.
+    ErrorCode.RUN_HANDED_OVER: HTTPStatus.SERVICE_UNAVAILABLE,
 }
+
+RETRY_AFTER_S: Final = 1  # a 429 clears when an admission slot frees up; one second is plenty
+
+
+def error_response(
+    status: HTTPStatus, code: str, message: str, retryable: bool = False
+) -> JSONResponse:
+    """The one error body: `{code, message, retryable}`; 401/429 carry their RFC headers."""
+    headers: dict[str, str] = {}
+    if status == HTTPStatus.UNAUTHORIZED:
+        headers["WWW-Authenticate"] = "Bearer"
+    elif status == HTTPStatus.TOO_MANY_REQUESTS:
+        headers["Retry-After"] = str(RETRY_AFTER_S)
+    body = {"code": code, "message": message, "retryable": retryable}
+    return JSONResponse(body, status_code=status, headers=headers)
 
 
 class _Dto(BaseModel):
@@ -201,6 +220,19 @@ class SseEncoder:
         self._run_id = str(run_id)
         self._seq = 0
         self._failed = False
+
+    def handed_over(self) -> ServerSentEvent:
+        """Terminal frame of an inline run that continues elsewhere (drained for shutdown)."""
+        self._seq += 1
+        body = {
+            "code": ErrorCode.RUN_HANDED_OVER.value,
+            "message": "run handed over to another executor; poll the run for its result",
+            "retryable": True,
+            "run_id": self._run_id,
+        }
+        return ServerSentEvent(
+            event="error", id=f"{self._run_id}:{self._seq}", raw_data=to_json(body).decode()
+        )
 
     def encode(self, event: RunEvent) -> ServerSentEvent:
         """Raises after an `error` frame was emitted: the caller must stop and cancel the run."""

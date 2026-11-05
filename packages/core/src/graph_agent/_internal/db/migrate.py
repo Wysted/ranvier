@@ -55,7 +55,8 @@ def discover_migrations() -> list[Migration]:
 async def _lock_holder(conn: AsyncConnection[tuple[Any, ...]]) -> int | None:
     # Session advisory locks of one key: classid/objid hold the two halves of the bigint key.
     cur = await conn.execute(
-        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1 "
+        "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
         "AND ((classid::bigint << 32) | objid::bigint) = %s",
         (ADVISORY_LOCK_KEY,),
     )

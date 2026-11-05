@@ -224,7 +224,9 @@ def _add_run(sub: SubparsersAction) -> None:
 
 
 async def _consume(events: "AsyncIterator[RunEvent]") -> int | None:
-    """Emit events up to the first terminal one; its exit code, or None if the stream was empty.
+    """Emit events up to the first terminal one; return its exit code.
+
+    None when no terminal event arrived.
 
     The caller closes the stream. An unserializable intermediate event stops consumption with
     exit 1 (`internal_error`); in database mode closing the stream cancels the run, so the CLI
@@ -374,8 +376,8 @@ async def _run_database(
             )
             async with aclosing(execute_run(container, run.run_id)) as events:
                 code = await _consume(events)
-            if code is None:  # empty stream: claim lost
-                print(f"run {run.run_id} was claimed by another worker", file=sys.stderr)
+            if code is None:  # no terminal event: the claim or lease was lost
+                print(f"run {run.run_id} lost its claim or lease", file=sys.stderr)
                 return 1
             return code
         except RunError as exc:
@@ -387,3 +389,28 @@ async def _run_database(
 
 _COMMANDS.append(_add_migrate)
 _COMMANDS.append(_add_run)
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    settings = _load_settings()  # validates up front with readable errors
+    if settings is None:
+        return 1
+    # cli and api are sibling layers (C1): uvicorn imports the factory by name, which loads the
+    # same Settings() again inside the server process.
+    uvicorn.run(
+        "graph_agent._internal.api.app:app_from_env",
+        factory=True,
+        host=settings.api.host,
+        port=settings.api.port,
+    )
+    return 0
+
+
+def _add_serve(sub: SubparsersAction) -> None:
+    parser = sub.add_parser("serve", help="run the HTTP API (host and port: api.* settings)")
+    parser.set_defaults(handler=_serve)
+
+
+_COMMANDS.append(_add_serve)

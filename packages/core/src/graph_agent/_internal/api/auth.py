@@ -22,6 +22,8 @@ _LOCALHOST = "localhost"
 
 @dataclass(frozen=True, slots=True)
 class Principal:
+    """The caller. `tenant_id=None` is an admin identity: it sees the threads of every tenant."""
+
     subject: str
     tenant_id: str | None = None
 
