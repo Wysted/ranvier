@@ -271,7 +271,6 @@ async def test_exhausted_and_cancel_requested_ends_cancelled(
     claim = await repo.claim(claimed.run_id, "a", LEASE_S, MAX_ATTEMPTS)
     assert claim.outcome is ClaimOutcome.CANCELLED
     result = await repo.expired(max_attempts=MAX_ATTEMPTS)
-    assert result.cancelled == [swept.run_id]
     assert result.exhausted == result.redefer == []
     for run in (swept, claimed):
         stored = await _get(repo, run)

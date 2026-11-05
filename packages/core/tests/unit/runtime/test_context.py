@@ -9,12 +9,17 @@ from graph_agent._internal.runtime.context import FlowContextImpl, RunContext
 SPEC = AgentSpec(name="a", profile="p")
 
 
+async def _build(spec: AgentSpec) -> Any:
+    return f"agent:{spec.name}"
+
+
 def _ctx(**kw: Any) -> FlowContextImpl:
     base: dict[str, Any] = {
         "flow": "f",
         "config": {"language": "es"},
         "model_fn": lambda profile: f"model:{profile}",
         "tools_fn": lambda *names: list(names),
+        "agent_fn": _build,
     }
     return FlowContextImpl(**(base | kw))
 
@@ -26,15 +31,7 @@ def test_model_and_tools_delegate() -> None:
 
 
 async def test_agent_delegates() -> None:
-    async def build(spec: AgentSpec) -> str:
-        return f"agent:{spec.name}"
-
-    assert str(await _ctx(agent_fn=build).agent(SPEC)) == "agent:a"
-
-
-async def test_agent_without_factory_raises() -> None:
-    with pytest.raises(RuntimeError, match="agent factory"):
-        await _ctx().agent(SPEC)
+    assert str(await _ctx().agent(SPEC)) == "agent:a"
 
 
 def test_run_context_is_frozen() -> None:

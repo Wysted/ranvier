@@ -71,16 +71,6 @@ class RunError(Exception):
 _TERMINAL: Final = frozenset(
     {RunStatus.SUCCESS, RunStatus.ERROR, RunStatus.INTERRUPTED, RunStatus.CANCELLED}
 )
-_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
-    RunStatus.PENDING: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
-    RunStatus.RUNNING: _TERMINAL,
-    **{status: frozenset[RunStatus]() for status in _TERMINAL},
-}
-
-
-def can_transition(source: RunStatus, target: RunStatus) -> bool:
-    """The design section 5 "Transitions" table."""
-    return target in _TRANSITIONS[source]
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +134,6 @@ type RunRef = tuple[uuid.UUID, uuid.UUID]  # (run_id, thread_id): what a defer n
 @dataclass(frozen=True, slots=True)
 class ExpiredRuns:
     exhausted: list[uuid.UUID]  # moved to error / orphan_retries_exhausted
-    cancelled: list[uuid.UUID]  # cancel was requested: moved to cancelled, nothing to run
     redefer: list[RunRef]  # expired with attempts left: the caller defers `execute_run` again
 
 
@@ -437,13 +426,13 @@ class RunsRepository:
         rows = await self._fetch(
             _EXPIRED, {"max_attempts": max_attempts, "error": Jsonb(error.as_dict())}
         )
-        out = ExpiredRuns(exhausted=[], cancelled=[], redefer=[])
+        out = ExpiredRuns(exhausted=[], redefer=[])
         for row in rows:
             match RunStatus(row["status"]):
                 case RunStatus.ERROR:
                     out.exhausted.append(row["run_id"])
-                case RunStatus.CANCELLED:
-                    out.cancelled.append(row["run_id"])
+                case RunStatus.CANCELLED:  # cancel was requested: nothing to run
+                    pass
                 case _:
                     out.redefer.append((row["run_id"], row["thread_id"]))
         return out
