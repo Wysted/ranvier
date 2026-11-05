@@ -129,32 +129,37 @@ __all__ = ["AgentSpec", "AuthError", "FlowContext", "Principal", "RunContext", "
 # Principal(subject, tenant_id) and AuthError are re-exported from _internal.api.auth:
 # an auth hook ("module:callable") returns a Principal or raises AuthError (-> 401).
 
+
 @dataclass(frozen=True, slots=True)
-class RunContext:                  # LangGraph Runtime.context of every run; data only, not persisted
+class RunContext:  # LangGraph Runtime.context of every run; data only, not persisted
     run_id: str
     thread_id: str
     flow: str
     flow_version: int
-    attempt: int                   # 1 + number of orphan recoveries of this run
+    attempt: int  # 1 + number of orphan recoveries of this run
     tenant_id: str | None
 
-class FlowContext(Protocol):       # handed to flow factories at build time
+
+class FlowContext(Protocol):  # handed to flow factories at build time
     flow: str
-    config: Mapping[str, Any]      # [flows.<name>.config] from the manifest
+    config: Mapping[str, Any]  # [flows.<name>.config] from the manifest
+
     def model(self, profile: str) -> BaseChatModel: ...
     def tools(self, *names: str) -> list[BaseTool]: ...
     async def agent(self, spec: AgentSpec) -> CompiledStateGraph: ...
 
+
 @dataclass(frozen=True, slots=True)
 class AgentSpec:
-    name: str                      # also the usage-ledger attribution key
-    profile: str                   # LLM profile name
+    name: str  # also the usage-ledger attribution key
+    profile: str  # LLM profile name
     system_prompt: str | None = None
-    tools: Sequence[str | BaseTool] = ()      # registry names or tool objects
-    mcp_servers: Sequence[str] = ()           # names from [mcp.servers]
-    skills: Sequence[Path] = ()               # directories holding SKILL.md folders
+    tools: Sequence[str | BaseTool] = ()  # registry names or tool objects
+    mcp_servers: Sequence[str] = ()  # names from [mcp.servers]
+    skills: Sequence[Path] = ()  # directories holding SKILL.md folders
     middleware: Sequence[AgentMiddleware] = ()
     response_format: type | None = None
+
 
 def as_tool(agent: CompiledStateGraph, *, name: str, description: str) -> BaseTool: ...
 ```
@@ -433,12 +438,21 @@ Money is never stored: `graph-agent usage` prices rows at read time with `genai-
 **Kit shipped to users (`graph_agent.testing`):**
 
 ```python
-class FakeChatModel(BaseChatModel):          # scripted replies, tool calls allowed; bind_tools is a no-op
+class FakeChatModel(
+    BaseChatModel
+):  # scripted replies, tool calls allowed; bind_tools is a no-op
     def __init__(self, responses: Sequence[AIMessage | str]) -> None: ...
-    calls: list[list[BaseMessage]]           # what the model received, for assertions
 
-def flow_context(*, models: Mapping[str, BaseChatModel] = ..., tools: Mapping[str, BaseTool] = ...,
-                 config: Mapping[str, Any] = ...) -> FlowContext: ...
+    calls: list[list[BaseMessage]]  # what the model received, for assertions
+
+
+def flow_context(
+    *,
+    models: Mapping[str, BaseChatModel] = ...,
+    tools: Mapping[str, BaseTool] = ...,
+    config: Mapping[str, Any] = ...,
+) -> FlowContext: ...
+
 
 @dataclass(frozen=True)
 class FlowResult:
@@ -446,9 +460,15 @@ class FlowResult:
     interrupts: tuple[Interrupt, ...]
     events: tuple[RunEvent, ...]
 
-async def run_flow(target: StateGraph | Callable[[FlowContext], Any], input: Any = None, *,
-                   ctx: FlowContext | None = None, thread_id: str | None = None,
-                   resume: Any = None) -> FlowResult: ...   # InMemorySaver, same runner mapping
+
+async def run_flow(
+    target: StateGraph | Callable[[FlowContext], Any],
+    input: Any = None,
+    *,
+    ctx: FlowContext | None = None,
+    thread_id: str | None = None,
+    resume: Any = None,
+) -> FlowResult: ...  # InMemorySaver, same runner mapping
 ```
 
 Testing a flow: build `flow_context(models={"fast": FakeChatModel([...])})`, call `run_flow`, assert on `values`; call again with the same `thread_id` and `resume=` to test interrupts.
