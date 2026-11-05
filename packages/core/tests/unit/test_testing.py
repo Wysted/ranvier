@@ -61,6 +61,13 @@ async def test_interrupt_resume_shares_the_thread() -> None:
     assert second.interrupts == ()
 
 
+async def test_input_on_an_interrupted_thread_is_rejected() -> None:
+    ctx = flow_context()
+    await run_flow(_asking(), {}, ctx=ctx, thread_id="t6")
+    with pytest.raises(ValueError, match="pending interrupt"):
+        await run_flow(_asking(), {"n": 1}, ctx=ctx, thread_id="t6")
+
+
 async def test_resume_by_id_map_and_errors() -> None:
     ctx = flow_context()
     with pytest.raises(ValueError, match="exactly one pending interrupt"):

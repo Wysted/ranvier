@@ -169,7 +169,6 @@ async def test_cpu_pool_runs_and_reuses_slots() -> None:
         first = await pool.run(os.getpid, timeout_s=10)
         second = await pool.run(os.getpid, timeout_s=10)
         assert first == second  # same worker reused
-        assert pool.recycles == 0
         assert pool.free_slots == 1
     finally:
         pool.close()
@@ -186,7 +185,6 @@ async def test_cpu_pool_timeout_kills_worker_and_spares_other_slot() -> None:
         before = set(_pids(pool))
         with pytest.raises(TimeoutError):
             await stuck
-        assert pool.recycles == 1
         assert await healthy is None  # untouched by the other slot's kill
         after = set(_pids(pool))
         (killed,) = before - after  # only the stuck slot's worker was replaced
@@ -205,7 +203,6 @@ async def test_cpu_pool_caller_cancellation_kills_worker() -> None:
         (pid,) = _pids(pool)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        assert pool.recycles == 1
         assert await _wait_gone(pid)
         assert pool.free_slots == 1
     finally:
@@ -218,9 +215,10 @@ async def test_cpu_pool_queued_timeout_does_not_recycle() -> None:
     try:
         busy = asyncio.create_task(pool.run(exec, _sleep(1.0), timeout_s=10))
         await asyncio.sleep(0.2)
+        before = _pids(pool)
         with pytest.raises(TimeoutError):
             await pool.run(os.getpid, timeout_s=0.2)  # waits for the only slot
-        assert pool.recycles == 0
+        assert _pids(pool) == before
         assert await busy is None
     finally:
         pool.close()
@@ -230,9 +228,10 @@ async def test_cpu_pool_worker_crash_recycles_slot() -> None:
     pool = CpuPool(1)
     await pool.start()
     try:
+        before = _pids(pool)
         with pytest.raises(BrokenProcessPool):
             await pool.run(exec, *_SELFKILL, timeout_s=10)
-        assert pool.recycles == 1
+        assert _pids(pool) != before  # the slot got a fresh executor
         assert isinstance(await pool.run(os.getpid, timeout_s=10), int)
     finally:
         pool.close()
@@ -246,7 +245,6 @@ async def test_cpu_pool_close_is_terminal() -> None:
         await pool.run(os.getpid, timeout_s=10)
     pool._recycle(0)  # a late recycle must not respawn a worker
     assert pool._pools[0]._processes in (None, {})
-    assert pool.recycles == 1
 
 
 async def test_lag_sampler_stop_surfaces_sampler_error() -> None:

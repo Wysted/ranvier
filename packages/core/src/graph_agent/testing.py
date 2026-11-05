@@ -144,15 +144,20 @@ def flow_context(
     return _MemoryContext(FLOW_NAME, dict(config or {}), model, lookup, agent)
 
 
-async def _resume_command(
-    graph: CompiledStateGraph[Any, Any, Any, Any], config: RunnableConfig, resume: Any
-) -> Command[Any]:
+async def _checked_payload(
+    graph: CompiledStateGraph[Any, Any, Any, Any],
+    config: RunnableConfig,
+    input: Any,
+    resume: Any,
+) -> Any:
     """Same rule as the CLI and API: `check_thread_command` over the thread's pending ids."""
     pending = [i.id for i in (await graph.aget_state(config)).interrupts]
     try:
-        check_thread_command(pending, input=None, resume=resume)
+        check_thread_command(pending, input=input, resume=resume)
     except RunError as exc:
         raise ValueError(exc.message) from exc
+    if resume is None:
+        return input
     return Command(resume=dict(resume) if is_resume_map(resume) else resume)
 
 
@@ -181,7 +186,7 @@ async def run_flow(
         "configurable": {"thread_id": thread_id},
         "metadata": {"run_id": run_id},
     }
-    payload = input if resume is None else await _resume_command(graph, config, resume)
+    payload = await _checked_payload(graph, config, input, resume)
 
     run_ctx = RunContext(run_id, thread_id, FLOW_NAME, FLOW_VERSION, 1, None)
     # shortcut: no run timeout, bound tests with asyncio.timeout; add one if users hang CI

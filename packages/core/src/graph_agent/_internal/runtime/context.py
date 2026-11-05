@@ -48,7 +48,7 @@ class FlowContextImpl:
     config: Mapping[str, Any]
     model_fn: Callable[[str], BaseChatModel]
     tools_fn: Callable[..., list[BaseTool]]
-    agent_fn: Callable[[AgentSpec], Awaitable[CompiledStateGraph[Any, Any, Any, Any]]] | None = None
+    agent_fn: Callable[[AgentSpec], Awaitable[CompiledStateGraph[Any, Any, Any, Any]]]
 
     def model(self, profile: str) -> BaseChatModel:
         return self.model_fn(profile)
@@ -57,8 +57,4 @@ class FlowContextImpl:
         return self.tools_fn(*names)
 
     async def agent(self, spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]:
-        if self.agent_fn is None:
-            raise RuntimeError(
-                f"flow {self.flow!r}: this FlowContext was built without an agent factory"
-            )
         return await self.agent_fn(spec)

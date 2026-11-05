@@ -64,12 +64,10 @@ jobs:
           enable-cache: true
       - run: uv sync
       - run: scripts/check.sh
-      # Tool config lives in packages/core, so pytest runs from there. The integration tests
-      # arrive with T06+; pytest exits 5 when nothing is collected, tolerated until then.
-      # shortcut: tolerates an empty integration suite, drop `|| [ $? -eq 5 ]` once T06 lands.
+      # Tool config lives in packages/core, so pytest runs from there.
       - name: Integration tests
         working-directory: packages/core
-        run: uv run pytest -m integration -q -rs || [ $? -eq 5 ]
+        run: uv run pytest -m integration -q -rs
 
   install:
     name: install (py${{ matrix.python }})

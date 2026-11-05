@@ -136,7 +136,6 @@ class CpuPool:
         self._free: asyncio.Queue[int] = asyncio.Queue()
         for slot in range(workers):
             self._free.put_nowait(slot)
-        self.recycles = 0
         self._closed = False
 
     @staticmethod
@@ -152,18 +151,6 @@ class CpuPool:
     def _warm(self) -> None:
         for pool in self._pools:
             pool.submit(int).result()
-
-    async def __aenter__(self) -> Self:
-        await self.start()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        self.close()
 
     async def run(self, fn: Callable[..., Any], *args: Any, timeout_s: float) -> Any:
         """Raises TimeoutError (also while waiting for a slot) or BrokenProcessPool."""
@@ -196,7 +183,6 @@ class CpuPool:
         old = self._pools[slot]
         if not self._closed:
             self._pools[slot] = self._new()
-        self.recycles += 1
         _kill_pool(old)
 
     @property

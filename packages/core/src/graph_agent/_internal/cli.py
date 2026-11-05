@@ -366,45 +366,52 @@ async def _run_database(
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.runtime.events import ErrorEvent
     from graph_agent._internal.runtime.runner import (
-        check_thread_command,
+        cancel_pending_run,
         execute_run,
-        pending_interrupts,
+        prepare_thread_run,
     )
-    from graph_agent._internal.runtime.runs import ErrorCode, Run, RunError
+    from graph_agent._internal.runtime.runs import RunError
 
     async with open_container(settings) as container:
         runs = container.runs
         if runs is None:
             raise RuntimeError("database mode opened a container without a runs repository")
-        run: Run | None = None
         try:
-            flow = await container.flows.get(name)
-            version = flow.version
-            if pin := await runs.thread_pin(thread_id):  # the thread's first run fixed these
-                if pin.flow != name:
-                    raise RunError(
-                        ErrorCode.INVALID_REQUEST,
-                        f"thread {thread_id} belongs to flow {pin.flow!r}",
-                    )
-                version = pin.flow_version  # execute_run rejects it if the flow moved on
-            pending = await pending_interrupts(container.checkpointer, thread_id)
-            check_thread_command(pending, input=input, resume=resume)
+            pin = await prepare_thread_run(
+                container,
+                runs,
+                flow=name,
+                thread_id=thread_id,
+                tenant_id=None,
+                input=input,
+                resume=resume,
+            )
             run = await runs.create(
                 thread_id=thread_id,
                 flow=name,
-                flow_version=version,
+                flow_version=pin.flow_version,
+                tenant_id=pin.tenant_id,
                 input=input,
                 command=None if resume is None else {"resume": resume},
             )
+            code = None
             async with aclosing(execute_run(container, run.run_id)) as events:
-                code = await _consume(events)
+                try:
+                    # The claim (thread_busy) happens before the first event.
+                    first = await anext(events, None)
+                except BaseException:
+                    # Claim refused, DB error, Ctrl-C: the row must not stay claimable (1z, 1q).
+                    await cancel_pending_run(container, runs, run)
+                    raise
+                if first is not None:
+                    code = _emit(first)
+                    if code is None:
+                        code = await _consume(events)
             if code is None:  # no terminal event: the claim or lease was lost
                 print(f"run {run.run_id} lost its claim or lease", file=sys.stderr)
                 return 1
             return code
         except RunError as exc:
-            if run is not None:  # thread_busy: the pending row would stay claimable
-                await runs.request_cancel(run.run_id, run.thread_id)
             _emit(ErrorEvent(exc.code.value, str(exc), exc.retryable))
             return 1
 
