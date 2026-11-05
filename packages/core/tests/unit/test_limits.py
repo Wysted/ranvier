@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import threading
 import time
 from collections.abc import Iterator
@@ -278,3 +279,12 @@ async def test_stop_admission_refuses_new_and_waiting_runs() -> None:
 def test_graceful_wait_leaves_a_margin_for_the_hand_over() -> None:
     assert graceful_wait_s(60) == 60 - HANDOVER_MARGIN_S
     assert graceful_wait_s(1) == 0
+
+
+async def test_cpu_pool_worker_ignores_sigint() -> None:
+    pool = CpuPool(1)
+    await pool.start()
+    try:  # signal.getsignal runs in the forkserver worker, where the initializer ran
+        assert await pool.run(signal.getsignal, signal.SIGINT, timeout_s=10) == signal.SIG_IGN
+    finally:
+        pool.close()

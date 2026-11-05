@@ -7,9 +7,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from graph_agent._internal import bootstrap
 from graph_agent._internal.bootstrap import ShutdownBudget
-from graph_agent._internal.config.manifest import FlowSpec
+from graph_agent._internal.config.manifest import FlowSpec, LlmProfile, LlmSettings, ToolSpec
 from graph_agent._internal.config.settings import LimitsSettings, Settings
-from graph_agent._internal.limits import ShuttingDown
+from graph_agent._internal.limits import HANDOVER_MARGIN_S, ShuttingDown
 from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 
 LAG_TASK = "loop-lag-sampler"
@@ -187,14 +187,18 @@ def test_short_grace_warns_naming_the_longest_timeout(caplog: pytest.LogCaptureF
     short = Settings(
         _env_file=None,
         limits=LimitsSettings(shutdown_grace_s=30),
-        flows={
-            "slow": FlowSpec(target="m:g", timeout_s=120),
-            "fast": FlowSpec(target="m:g", timeout_s=10),
-        },
+        tools={"slow": ToolSpec(target="m:t", timeout_s=40), "fast": ToolSpec(target="m:t")},
+        llm=LlmSettings(
+            profiles={
+                "p": LlmProfile(
+                    provider="openai", model="m", api_key_env="K", timeout_s=20, max_retries=2
+                ),
+            }
+        ),
     )
     with caplog.at_level("WARNING", logger=bootstrap.__name__):
         bootstrap._warn_short_grace(short)
-    assert "flow slow (120s)" in caplog.text
+    assert "llm profile p" in caplog.text and "60s" in caplog.text and "waits 25s" in caplog.text
     caplog.clear()
     with caplog.at_level("WARNING", logger=bootstrap.__name__):
         bootstrap._warn_short_grace(
@@ -202,6 +206,23 @@ def test_short_grace_warns_naming_the_longest_timeout(caplog: pytest.LogCaptureF
         )
         bootstrap._warn_short_grace(Settings(_env_file=None))  # nothing declared
     assert caplog.text == ""
+
+
+def test_flow_timeouts_do_not_count_against_the_grace(caplog: pytest.LogCaptureFixture) -> None:
+    # A drain waits one superstep, not the whole flow: the defaults must start quietly.
+    settings = Settings(_env_file=None, flows={"slow": FlowSpec(target="m:g", timeout_s=600)})
+    with caplog.at_level("WARNING", logger=bootstrap.__name__):
+        bootstrap._warn_short_grace(settings)
+    assert caplog.text == ""
+
+
+def test_grace_within_the_handover_margin_warns_drain_disabled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings(_env_file=None, limits=LimitsSettings(shutdown_grace_s=HANDOVER_MARGIN_S))
+    with caplog.at_level("WARNING", logger=bootstrap.__name__):
+        bootstrap._warn_short_grace(settings)
+    assert "drain disabled" in caplog.text
 
 
 def test_shutdown_budget_start_is_idempotent() -> None:

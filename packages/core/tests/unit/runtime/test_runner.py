@@ -496,6 +496,20 @@ async def test_cancelled_while_draining_hands_the_run_over(user_module: types.Mo
     assert cast(FakeQueue, res.queue).deferred == [(run.run_id, run.thread_id)]
 
 
+async def test_closed_at_a_yield_while_draining_hands_the_run_over(
+    user_module: types.ModuleType,
+) -> None:
+    run = _run("slow")
+    res, fake = _resources(run)
+    gen = execute_run(res, run.run_id)
+    await anext(gen)  # metadata: the generator is suspended at its yield
+    res.active_runs.request_drain()  # the server then closes the stream (GeneratorExit)
+    await gen.aclose()
+    await res.active_runs.settled()
+    assert fake.finished == [] and fake.released == [TOKEN]
+    assert cast(FakeQueue, res.queue).deferred == [(run.run_id, run.thread_id)]
+
+
 async def test_pump_cancelled_without_a_reason_is_an_internal_error(
     user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

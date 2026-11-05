@@ -6,7 +6,6 @@ import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import pytest
@@ -15,19 +14,15 @@ from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
-from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
-from graph_agent._internal.runtime.checkpointer import Checkpointer
-from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
 from graph_agent._internal.worker import run_worker
+from integration._resources import Resources
 
 MODULE = "t24_integration_flows"
 FLOW_VERSION = 1
@@ -35,8 +30,6 @@ NODE_S = 0.4
 POLL_S = 0.02
 WAIT_S = 10.0
 timeline: list[str] = []
-
-GRACE_S = 10.0
 
 
 class State(TypedDict, total=False):
@@ -58,21 +51,6 @@ def user_module() -> Iterator[None]:
     timeline.clear()
     yield
     del sys.modules[MODULE]
-
-
-@dataclass
-class Resources:
-    settings: Settings
-    runs: RunsRepository | None
-    flows: FlowRegistry
-    checkpointer: Checkpointer
-    queue: RunQueue | None
-    observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
-    observability: Observability = field(
-        default_factory=lambda: Observability(metrics=LoggingMetrics())
-    )
 
 
 @pytest.fixture

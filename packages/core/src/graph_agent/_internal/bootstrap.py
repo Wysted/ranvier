@@ -8,6 +8,7 @@ tracing and the checkpointer (design sections 2, 8). Each resource is entered in
 import asyncio
 import logging
 import math
+import threading
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
@@ -20,6 +21,7 @@ from psycopg_pool import AsyncConnectionPool
 from graph_agent._internal.agents.factory import build_agent
 from graph_agent._internal.agents.mcp import McpToolSource, open_mcp_sources
 from graph_agent._internal.agents.tools import ToolRegistry
+from graph_agent._internal.config.manifest import LlmProfile
 from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.db.pool import (
     CheckpointerPool,
@@ -27,7 +29,14 @@ from graph_agent._internal.db.pool import (
     open_app_pool,
     open_checkpointer_pool,
 )
-from graph_agent._internal.limits import CpuPool, Limits, LoopLagSampler, install_default_executor
+from graph_agent._internal.limits import (
+    HANDOVER_MARGIN_S,
+    CpuPool,
+    Limits,
+    LoopLagSampler,
+    graceful_wait_s,
+    install_default_executor,
+)
 from graph_agent._internal.llm import LlmRegistry
 from graph_agent._internal.observability.tracing import Observability, setup_observability
 from graph_agent._internal.queue import ProcrastinateRunQueue, make_app
@@ -217,22 +226,46 @@ async def open_container(
 
 
 def _warn_short_grace(settings: Settings) -> None:
-    """A drain waits for the superstep in flight: the grace must outlast the longest timeout."""
+    """A drain waits for the superstep in flight: the real wait should outlast the longest I/O."""
+    grace = settings.limits.shutdown_grace_s
+    wait = graceful_wait_s(grace)
+    if grace > 0 and wait == 0:
+        logger.warning(
+            "limits.shutdown_grace_s (%gs) is not above the %gs hand-over margin: drain disabled, "
+            "a shutdown cancels runs at once and their nodes re-run",
+            grace,
+            HANDOVER_MARGIN_S,
+        )
+        return
     tool_default = settings.limits.tool_timeout_s
     timeouts = [
-        *((f"flow {name}", f.timeout_s) for name, f in settings.flows.items()),
         *((f"tool {name}", t.timeout_s or tool_default) for name, t in settings.tools.items()),
         *((f"mcp server {name}", m.timeout_s) for name, m in settings.mcp.servers.items()),
-        *((f"llm profile {name}", p.timeout_s) for name, p in settings.llm.profiles.items()),
+        *(
+            # ollama has no retries (its default max_retries is not applied)
+            (
+                f"llm profile {name}",
+                p.timeout_s * (1 if p.provider == "ollama" else p.max_retries + 1),
+            )
+            for name, p in settings.llm.profiles.items()
+        ),
     ]
-    grace = settings.limits.shutdown_grace_s
-    if timeouts and grace < (longest := max(timeouts, key=lambda item: item[1]))[1]:
+    if timeouts and wait < (longest := max(timeouts, key=lambda item: item[1]))[1]:
         logger.warning(
-            "limits.shutdown_grace_s (%gs) is shorter than the timeout of %s (%gs): a shutdown "
-            "can cut that run mid-node and leave it to the lease-expiry sweep",
+            "the shutdown drain waits %gs (limits.shutdown_grace_s %gs minus the %gs hand-over "
+            "margin), less than the %gs of %s: a node still inside it at the deadline is "
+            "cancelled and the run is handed over, so that node re-runs",
+            wait,
             grace,
-            *longest,
+            HANDOVER_MARGIN_S,
+            longest[1],
+            longest[0],
         )
+
+
+def _attempts(profile: LlmProfile) -> int:
+    # ollama has no retries (its default max_retries is not applied)
+    return 1 if profile.provider == "ollama" else profile.max_retries + 1
 
 
 def _prime_models(llm: LlmRegistry, profiles: list[str]) -> None:
@@ -258,10 +291,35 @@ async def _settle_runs(active: ActiveRuns, budget: ShutdownBudget) -> None:
 
 
 async def _shutdown_observability(obs: Observability, budget: ShutdownBudget) -> None:
-    """`Observability.shutdown` blocks (exporters); it gets what is left of the shutdown budget."""
+    """`Observability.shutdown` blocks (exporters); it gets what is left of the shutdown budget.
+
+    A daemon thread, not `to_thread`: an abandoned flush (collector down) must not keep the
+    process alive past the deadline.
+    """
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    def settle(exc: BaseException | None) -> None:
+        if done.done():  # cancelled by the timeout
+            return
+        if exc is None:
+            done.set_result(None)
+        else:
+            done.set_exception(exc)
+
+    def flush() -> None:
+        try:
+            obs.shutdown()
+            outcome = None
+        except BaseException as exc:  # handed to the awaiting side below
+            outcome = exc
+        with suppress(RuntimeError):  # the loop may be gone when an abandoned flush ends
+            loop.call_soon_threadsafe(settle, outcome)
+
+    threading.Thread(target=flush, name="observability-shutdown", daemon=True).start()
     try:
         async with asyncio.timeout_at(budget.deadline):
-            await asyncio.to_thread(obs.shutdown)
+            await done
     except TimeoutError:
         logger.warning("observability shutdown exceeded the shutdown grace, abandoning flush")
 

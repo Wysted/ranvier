@@ -112,9 +112,13 @@ class DrainingServer(uvicorn.Server):
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         # Upstream records the signal and re-raises it with the original handler once the server is
         # done: SIGTERM then kills the interpreter before its cleanup (leaked semaphores) and
-        # SIGINT raises KeyboardInterrupt. Exiting normally is the point of a graceful stop.
-        if self.should_exit and sig == signal.SIGINT:
-            self.force_exit = True
+        # SIGINT raises KeyboardInterrupt. Exiting normally is the point of a graceful stop. A
+        # later signal is ignored: upstream's force_exit would skip the lifespan shutdown.
+        if self.should_exit:
+            logger.warning(
+                "already shutting down (%s ignored); SIGKILL forces", signal.Signals(sig).name
+            )
+            return
         self.should_exit = True
 
 

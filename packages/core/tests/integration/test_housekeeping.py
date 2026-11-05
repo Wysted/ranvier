@@ -1,13 +1,13 @@
 """T25: sweep (stalled jobs, orphans), prune, cron firings and the Procrastinate schema step."""
 
 import asyncio
+import dataclasses
 import signal
 import sys
 import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, TypedDict
 
@@ -19,12 +19,10 @@ from procrastinate.periodic import PeriodicDeferrer
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import SecretStr
 
-from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.config.manifest import CronSpec, FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import MigrationError, advisory_lock, apply_migrations
 from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.queue import (
     PROCRASTINATE_MIGRATIONS,
     ProcrastinateRunQueue,
@@ -32,13 +30,10 @@ from graph_agent._internal.queue import (
     make_app,
 )
 from graph_agent._internal.runtime.checkpointer import (
-    Checkpointer,
     create_checkpointer,
     setup_checkpointer,
 )
-from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
 from graph_agent._internal.worker import (
     FIRE_CRON,
@@ -49,6 +44,7 @@ from graph_agent._internal.worker import (
     run_sweep,
     run_worker,
 )
+from integration._resources import Resources
 
 MODULE = "t25_integration_flows"
 FLOW = "steps"
@@ -56,11 +52,10 @@ OTHER = "other"
 POLL_S = 0.02
 WAIT_S = 10.0
 SHORT_LEASE_S = 0.05
+STALE_AGE_S = 3600.0  # how far back a test moves `created_at` to make a run stale
 CRON = CronSpec(schedule="0 3 * * *", input={"source": "daily"})
 EXECUTE = "graph_agent.execute_run"
 ran: list[str] = []
-
-GRACE_S = 10.0
 
 
 class State(TypedDict, total=False):
@@ -84,21 +79,6 @@ def user_module() -> Iterator[None]:
     ran.clear()
     yield
     del sys.modules[MODULE]
-
-
-@dataclass
-class Resources:
-    settings: Settings
-    runs: RunsRepository | None
-    flows: FlowRegistry
-    checkpointer: Checkpointer
-    queue: RunQueue | None
-    observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(GRACE_S))
-    observability: Observability = field(
-        default_factory=lambda: Observability(metrics=LoggingMetrics())
-    )
 
 
 @pytest.fixture
@@ -219,8 +199,16 @@ async def test_stale_pending_run_is_redeferred_oldest_first(
     runs, queue = _parts(res)
     first, _ = await _new_run(res)
     second, _ = await _new_run(res)
-    await asyncio.sleep(0.2)  # older than runs.pending_redefer_s
     fresh, _ = await _new_run(res)
+    await _rows(  # age only the first two by the same delta: no timing, the order is kept
+        pool,
+        "UPDATE graph_agent.runs SET created_at = created_at - make_interval(secs => %s) "
+        "WHERE run_id = ANY(%s) RETURNING run_id",
+        STALE_AGE_S,
+        [first, second],
+    )
+    runs_cfg = res.settings.runs.model_copy(update={"pending_redefer_s": STALE_AGE_S / 2})
+    res = dataclasses.replace(res, settings=res.settings.model_copy(update={"runs": runs_cfg}))
 
     assert await run_sweep(res, runs, queue)
 

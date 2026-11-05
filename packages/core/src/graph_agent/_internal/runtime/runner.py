@@ -307,10 +307,9 @@ async def execute_run(
     a separate shielded task bounded by the shutdown budget. Memory mode has no runs repository:
     raises.
 
-    While the container drains, a client disconnect ends the run in one of two ways depending on
-    where the generator is parked: waiting on `queue.get` it is cancelled (`CancelledError`) and
-    the run is handed over; suspended at a `yield` it is closed (`GeneratorExit`) and the run is
-    recorded `cancelled`. A disconnect is a client decision, so both are acceptable (T26).
+    While the container drains, any cancellation (`CancelledError` while waiting on `queue.get`,
+    `GeneratorExit` when closed at a `yield`, e.g. the server closing streams at its own timeout)
+    hands the run over (release + defer) instead of recording it `cancelled` (T26).
     """
     _check_modes(stream_modes)
     runs = container.runs
@@ -464,8 +463,9 @@ async def execute_run(
         # Client gone (GeneratorExit), executor cancelled, or a bug/infrastructure failure.
         if not attempt.settled:
             cancelled = isinstance(exc, (GeneratorExit, asyncio.CancelledError))
-            # A deploy/SIGTERM cancels the executor: hand the run over instead of cancelling it.
-            drain = isinstance(exc, asyncio.CancelledError) and container.active_runs.draining
+            # While draining, any cancellation (the executor's, or the server closing the stream at
+            # its own timeout) is the deploy, not a client decision: hand the run over.
+            drain = cancelled and container.active_runs.draining
             if cancelled:
                 status, error = RunStatus.CANCELLED, None
             else:

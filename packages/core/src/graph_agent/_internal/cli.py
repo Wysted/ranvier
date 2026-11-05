@@ -1,11 +1,11 @@
 import argparse
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotations only: the heavy imports are lazy inside the handlers
-    from collections.abc import Coroutine
     from uuid import UUID
 
     from graph_agent._internal.config.settings import Settings
@@ -459,24 +459,40 @@ def _worker(args: argparse.Namespace) -> int:
 
 
 async def _serve_jobs(settings: "Settings") -> None:
+    import asyncio
+
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.worker import WORKER_EXTRA_CONNECTIONS, run_worker
 
-    async with open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container:
-        await _until_signalled(run_worker(container))
+    main = asyncio.current_task()
+    assert main is not None
+    worker: asyncio.Task[None] | None = None
+
+    def cancel() -> None:  # the worker's cancel path is the graceful stop; before it exists, abort
+        (worker or main).cancel()
+
+    # The handlers outlive `open_container`: a signal during the close (pools, telemetry flush)
+    # must not raise KeyboardInterrupt in the middle of it or kill the process with SIG_DFL.
+    async with (
+        _until_signalled(cancel),
+        open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container,
+    ):
+        worker = asyncio.create_task(run_worker(container))
+        await worker
 
 
-async def _until_signalled(main: "Coroutine[Any, Any, None]") -> None:
-    """Run `main`; the first SIGTERM/SIGINT cancels it (its cancel path is the graceful stop).
+@asynccontextmanager
+async def _until_signalled(cancel: Callable[[], None]) -> AsyncIterator[None]:
+    """Call `cancel` on the first SIGTERM/SIGINT and swallow the cancellation it causes.
 
-    Returns normally after a signal. Ours instead of the interpreter's, so Ctrl+C is not a
-    KeyboardInterrupt in the middle of the shutdown; a second signal is ignored (SIGKILL forces).
+    The block returns normally after a signal (a cancellation from outside still propagates).
+    Ours instead of the interpreter's, so Ctrl+C is not a KeyboardInterrupt in the middle of the
+    shutdown; a second signal is ignored (SIGKILL forces).
     """
     import asyncio
     import signal
 
     loop = asyncio.get_running_loop()
-    task = asyncio.create_task(main)
     signalled = False
 
     def on_signal(sig: signal.Signals) -> None:
@@ -486,13 +502,13 @@ async def _until_signalled(main: "Coroutine[Any, Any, None]") -> None:
             return
         signalled = True
         logger.info("%s received: draining runs and shutting down", sig.name)
-        task.cancel()
+        cancel()
 
     handled = (signal.SIGINT, signal.SIGTERM)
     for sig in handled:
         loop.add_signal_handler(sig, on_signal, sig)
     try:
-        await task
+        yield
     except asyncio.CancelledError:
         if not signalled:  # cancelled from outside, not by us
             raise

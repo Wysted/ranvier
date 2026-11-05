@@ -27,7 +27,6 @@ from graph_agent._internal.runtime.checkpointer import prune_checkpoints
 from graph_agent._internal.runtime.runner import (
     RunnerResources,
     execute_run,
-    settle_runs,
     start_drain,
 )
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository
@@ -329,9 +328,10 @@ async def run_worker(container: RunnerResources) -> None:
 
     Cancelling this task is the graceful stop (the entrypoint does it on SIGTERM/SIGINT;
     Procrastinate's own signal handlers are off). Order: stop fetching, ask the runs in flight
-    to drain (each one stops after its superstep, releases its lease and defers itself), wait
-    for the jobs and for every cleanup, all bounded by the shutdown budget. The caller closes the
-    pools afterwards. Jobs still running at `graceful_wait_s` are aborted (they hand over too).
+    to drain (each one stops after its superstep, releases its lease and defers itself) and wait
+    for the jobs, bounded by the shutdown budget. The caller's `open_container` close awaits every
+    cleanup before it closes the pools. Jobs still running at `graceful_wait_s` are aborted
+    (they hand over too).
     """
     app = register_tasks(container)
     limits = container.settings.limits
@@ -351,8 +351,13 @@ async def run_worker(container: RunnerResources) -> None:
             raise
         worker.cancel()  # Procrastinate stops fetching, waits for its running jobs, then re-raises
         start_drain(container.active_runs, container.shutdown_budget)
-        await asyncio.wait({worker})
-        if not worker.cancelled() and (exc := worker.exception()) is not None:
+        loop = asyncio.get_running_loop()
+        # `open_container`'s close settles the runs; here only the worker's own stop is bounded.
+        _, pending = await asyncio.wait(
+            {worker}, timeout=max(container.shutdown_budget.deadline - loop.time(), 0)
+        )
+        if pending:
+            logger.error("worker did not stop within the shutdown grace")
+        elif not worker.cancelled() and (exc := worker.exception()) is not None:
             logger.error("worker failed while stopping", exc_info=exc)
-        await settle_runs(container.active_runs, container.shutdown_budget)
         raise
