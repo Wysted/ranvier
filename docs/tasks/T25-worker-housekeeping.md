@@ -35,11 +35,11 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Changing the runner (T16)
 
 ## Acceptance criteria
-- [ ] Sweep task every minute: stalled jobs via the job manager then `retry_job`; `runs.requeue_expired(max_attempts)` then defer each requeued run (idempotent with claims)
+- [ ] Sweep task every minute: stalled jobs via the job manager then `retry_job`; `runs.expired(max_attempts)` + `runs.stale_pending(runs.pending_redefer_s)` then defer each requeued run (idempotent with claims)
 - [ ] Prune task: `keep_latest` for threads idle longer than `threads.ttl_days`, `delete_thread` past the second TTL
 - [ ] One periodic task per manifest cron, registered from settings with kwargs; firing creates a run on a NEW thread and defers it
 - [ ] `crons` lists flow, schedule and next fire time (UTC) using T05's helper; `worker` starts the Procrastinate worker with an opened container; `migrate` also applies the Procrastinate schema (after SQL migrations and checkpointer setup)
-- [ ] Integration tests: orphan run goes back to pending and executes; a cron firing creates a run; stalled job is requeued
+- [ ] Integration tests: orphan run is re-deferred (status unchanged) and executes after a re-claim; a cron firing creates a run; stalled job is requeued
 - [ ] `scripts/check.sh` green
 - [ ] import-linter contracts hold
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
