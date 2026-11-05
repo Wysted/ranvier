@@ -3,7 +3,10 @@ from typing import Any
 
 import pytest
 
+from graph_agent._internal.agents.spec import AgentSpec
 from graph_agent._internal.runtime.context import FlowContextImpl, RunContext
+
+SPEC = AgentSpec(name="a", profile="p")
 
 
 def _ctx(**kw: Any) -> FlowContextImpl:
@@ -23,15 +26,15 @@ def test_model_and_tools_delegate() -> None:
 
 
 async def test_agent_delegates() -> None:
-    async def build(spec: object) -> str:
-        return f"agent:{spec}"
+    async def build(spec: AgentSpec) -> str:
+        return f"agent:{spec.name}"
 
-    assert str(await _ctx(agent_fn=build).agent("s")) == "agent:s"
+    assert str(await _ctx(agent_fn=build).agent(SPEC)) == "agent:a"
 
 
 async def test_agent_without_factory_raises() -> None:
     with pytest.raises(RuntimeError, match="agent factory"):
-        await _ctx().agent("s")
+        await _ctx().agent(SPEC)
 
 
 def test_run_context_is_frozen() -> None:

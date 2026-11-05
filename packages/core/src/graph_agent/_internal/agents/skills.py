@@ -18,6 +18,7 @@ SKILL_FILE = "SKILL.md"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 _FRONTMATTER_DELIMITER = "---"
+# shortcut: ASCII-only skill names, stricter than skills-ref; relax if a real skill needs it
 _NAME_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
 
@@ -119,9 +120,13 @@ class SkillsMiddleware(AgentMiddleware):
     def _with_skills(self, request: ModelRequest[Any]) -> ModelRequest[Any]:
         if not self._prompt:
             return request
-        current = request.system_message.text if request.system_message else ""
-        text = f"{current}\n\n{self._prompt}" if current else self._prompt
-        return request.override(system_message=SystemMessage(content=text))
+        # content_blocks (not .text) keeps non-text blocks such as cache_control.
+        blocks: list[Any] = (
+            list(request.system_message.content_blocks) if request.system_message else []
+        )
+        sep = "\n\n" if blocks else ""
+        blocks.append({"type": "text", "text": f"{sep}{self._prompt}"})
+        return request.override(system_message=SystemMessage(content=blocks))
 
     def wrap_model_call(
         self,

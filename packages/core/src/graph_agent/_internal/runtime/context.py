@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.graph.state import CompiledStateGraph
 
+    from graph_agent._internal.agents.spec import AgentSpec
+
 
 @dataclass(frozen=True, slots=True)
 class RunContext:
@@ -25,7 +27,6 @@ class RunContext:
     tenant_id: str | None
 
 
-# shortcut: `spec` is Any until AgentSpec (T27) exists, tighten the type when it lands.
 class FlowContext(Protocol):
     """Handed to flow factories at build time."""
 
@@ -34,7 +35,7 @@ class FlowContext(Protocol):
 
     def model(self, profile: str) -> BaseChatModel: ...
     def tools(self, *names: str) -> list[BaseTool]: ...
-    async def agent(self, spec: Any) -> CompiledStateGraph[Any, Any, Any, Any]: ...
+    async def agent(self, spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +46,7 @@ class FlowContextImpl:
     config: Mapping[str, Any]
     model_fn: Callable[[str], BaseChatModel]
     tools_fn: Callable[..., list[BaseTool]]
-    agent_fn: Callable[[Any], Awaitable[CompiledStateGraph[Any, Any, Any, Any]]] | None = None
+    agent_fn: Callable[[AgentSpec], Awaitable[CompiledStateGraph[Any, Any, Any, Any]]] | None = None
 
     def model(self, profile: str) -> BaseChatModel:
         return self.model_fn(profile)
@@ -53,7 +54,7 @@ class FlowContextImpl:
     def tools(self, *names: str) -> list[BaseTool]:
         return self.tools_fn(*names)
 
-    async def agent(self, spec: Any) -> CompiledStateGraph[Any, Any, Any, Any]:
+    async def agent(self, spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]:
         if self.agent_fn is None:
             raise RuntimeError(
                 f"flow {self.flow!r}: this FlowContext was built without an agent factory"
