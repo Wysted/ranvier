@@ -24,8 +24,8 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T16 | `runtime/runner.py`: `execute_run` (claim, astream v2 -> events, heartbeat, run timeout, cancel) | 5 | T13, T14, T15, S1 | sa-dev-py | [T16](tasks/T16-runner.md) | done |
 | T17 | `cli.py` part 1: `validate [--diagram] [--offline]` | 2 | T14 | sa-dev-py | [T17](tasks/T17-cli-validate.md) | done |
 | T18 | `cli.py` part 2: `migrate`, `run [--memory]` | 5 | T16 | sa-dev-py | [T18](tasks/T18-cli-migrate-run.md) | done |
-| T19 | `testing.py`: fake chat model fixture, in-memory path, flow test helper | 6 | T16, T30 | sa-dev-py | [T19](tasks/T19-testing-kit.md) | todo |
-| T20 | `examples/`: hello and approval (interrupt) flows with tests | 6 | T19 | sa-dev-py | [T20](tasks/T20-examples-basic.md) | todo |
+| T19 | `testing.py`: fake chat model fixture, in-memory path, flow test helper | 6 | T16, T30 | sa-dev-py | [T19](tasks/T19-testing-kit.md) | done |
+| T20 | `examples/`: hello and approval (interrupt) flows with tests | 6 | T19 | sa-dev-py | [T20](tasks/T20-examples-basic.md) | done |
 | T21 | `api/dto.py`: wire DTOs and SSE mapping (`{run_id}:{seq}` ids) | 7 | T12, T13 | sa-dev-py | [T21](tasks/T21-api-dto.md) | done |
 | T22 | `api/auth.py`: `Principal`, none (localhost) / static API keys / `module:callable` hook | 7 | T04 | sa-dev-py | [T22](tasks/T22-api-auth.md) | done |
 | T23 | `api/app.py` + `api/routes.py`: endpoints, admission (`429`), `serve` | 7 | T16, T21, T22 | sa-dev-py | [T23](tasks/T23-api-app-routes.md) | todo |
