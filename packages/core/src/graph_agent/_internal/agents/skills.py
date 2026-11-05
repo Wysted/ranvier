@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]  # shortcut: no types-PyYAML in dev deps, add it with the next pyproject edit
+import yaml
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool
