@@ -12,6 +12,8 @@ echo "=== 1. periodic (TZ set to a non-UTC zone on purpose) ==="
 TZ=America/Argentina/Buenos_Aires uv run python "$S/periodic_check.py"
 echo "=== 2. stalled jobs ==="
 uv run python "$S/stalled_check.py" 2>&1 | rg -v -e '^ ' -e '^Traceback' -e 'Error'
+echo "=== 2b/1b. stalled sweep vs a re-deferred run; periodic dedup gap ==="
+uv run python "$S/sweep_check.py"
 echo "=== 3. schema install and upgrade 3.0.0 -> project version ==="
 uv run --no-project --python 3.14 --with procrastinate==3.0.0 --with "psycopg[binary,pool]==3.3.8" \
   python "$S/schema_check.py" install s4_upgrade
