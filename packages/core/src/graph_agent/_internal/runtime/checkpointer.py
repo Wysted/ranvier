@@ -4,21 +4,29 @@ The pool is owned by the container (`db.pool.open_checkpointer_pool`); nothing h
 closes one. Checkpoint writes are not atomic with the app's UnitOfWork (design section 10).
 """
 
+import asyncio
+
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from psycopg import AsyncConnection
-from psycopg.rows import DictRow
 from psycopg_pool import AsyncConnectionPool
 
-type CheckpointerPool = AsyncConnectionPool[AsyncConnection[DictRow]]
+from graph_agent._internal.db.pool import CheckpointerPool
 
 
-def create_checkpointer(pool: CheckpointerPool) -> AsyncPostgresSaver:
+class PooledPostgresSaver(AsyncPostgresSaver):
+    """`AsyncPostgresSaver` whose DB calls run concurrently, bounded by the pool size."""
+
+    def __init__(self, pool: CheckpointerPool) -> None:
+        super().__init__(conn=pool)
+        if isinstance(self.conn, AsyncConnectionPool) and self.pipe is None:
+            # shortcut: replaces upstream's per-instance lock (serializes every call even over a
+            # pool, issue #7259); remove when upstream drops it.
+            self.lock = asyncio.Semaphore(self.conn.max_size)  # type: ignore[assignment]
+
+
+def create_checkpointer(pool: CheckpointerPool) -> PooledPostgresSaver:
     """Call from inside the running loop: upstream captures `asyncio.get_running_loop()`."""
-    # shortcut: upstream serializes writes per saver instance (design section 14, S4 verifies),
-    # so use one saver per process and size the pool for concurrent reads, not write parallelism;
-    # revisit if checkpoint latency shows up under load.
-    return AsyncPostgresSaver(conn=pool)
+    return PooledPostgresSaver(pool)
 
 
 def create_memory_checkpointer() -> InMemorySaver:
@@ -28,7 +36,8 @@ def create_memory_checkpointer() -> InMemorySaver:
 async def setup_checkpointer(pool: CheckpointerPool) -> None:
     """Create/migrate the checkpoint tables. Idempotent (upstream tracks `checkpoint_migrations`).
 
-    shortcut: no cross-process lock, so two concurrent `migrate` runs can race on the saver's
-    migrations; add an advisory lock (released in `finally`) if deploys ever overlap.
+    Precondition: the caller holds the migrations session advisory lock (`pg_advisory_lock`) on a
+    connection with no open transaction, so concurrent `migrate` runs cannot race here. The pool
+    must be autocommit (as `open_checkpointer_pool` is): setup runs `CREATE INDEX CONCURRENTLY`.
     """
     await create_checkpointer(pool).setup()

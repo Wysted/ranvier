@@ -1,59 +1,69 @@
-from typing import TypedDict, cast
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.postgres import _ainternal
 from langgraph.errors import GraphDrained
-from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import RunControl
+from psycopg_pool import AsyncConnectionPool
 
+from drain_graph import build_drain_graph
+from graph_agent._internal.db.pool import CheckpointerPool
 from graph_agent._internal.runtime.checkpointer import (
-    CheckpointerPool,
     create_checkpointer,
     create_memory_checkpointer,
 )
 
-
-class State(TypedDict):
-    trace: list[str]
-
-
-def test_create_memory_checkpointer() -> None:
-    assert isinstance(create_memory_checkpointer(), InMemorySaver)
+POOL_MAX = 3
+CALLS = 10
 
 
-async def test_create_checkpointer_binds_pool() -> None:
-    # Upstream binds the running loop in __init__, so it must be built inside a coroutine.
-    pool = cast(CheckpointerPool, MagicMock())
+async def test_saver_calls_overlap_up_to_pool_max(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unopened real pool: only `isinstance` and `max_size` are used; connections are faked below.
+    pool = cast(
+        CheckpointerPool,
+        AsyncConnectionPool("dbname=unused", min_size=1, max_size=POOL_MAX, open=False),
+    )
+    running = peak = 0
+
+    @asynccontextmanager
+    async def fake_connection(_conn: object) -> AsyncIterator[MagicMock]:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        try:
+            await asyncio.sleep(0.01)
+            conn = MagicMock()
+            cur = MagicMock()
+            cur.execute = MagicMock(side_effect=lambda *a, **k: asyncio.sleep(0))
+            cur.fetchone = MagicMock(side_effect=lambda: asyncio.sleep(0, None))
+
+            @asynccontextmanager
+            async def cursor(*_a: Any, **_k: Any) -> AsyncIterator[MagicMock]:
+                yield cur
+
+            conn.cursor = cursor
+            yield conn
+        finally:
+            running -= 1
+
+    monkeypatch.setattr(_ainternal, "get_connection", fake_connection)
     saver = create_checkpointer(pool)
-    assert isinstance(saver, AsyncPostgresSaver)
-    assert saver.conn is pool
+    config: RunnableConfig = {"configurable": {"thread_id": "t"}}
+    await asyncio.gather(*(saver.aget_tuple(config) for _ in range(CALLS)))
+    assert 1 < peak <= POOL_MAX
 
 
 async def test_run_id_metadata_and_drain_resume_in_memory() -> None:
     """Same S1 contract the Postgres integration test checks, against the in-memory saver."""
     control = RunControl()
     calls: list[str] = []
-
-    def first(state: State) -> State:
-        calls.append("first")
-        control.request_drain()
-        return {"trace": ["first"]}
-
-    def second(state: State) -> State:
-        calls.append("second")
-        return {"trace": [*state["trace"], "second"]}
-
-    builder = StateGraph(State)
-    builder.add_node("first", first)
-    builder.add_node("second", second)
-    builder.add_edge(START, "first")
-    builder.add_edge("first", "second")
-    builder.add_edge("second", END)
     saver = create_memory_checkpointer()
-    graph = builder.compile(checkpointer=saver)
+    graph = build_drain_graph(saver, control, calls)
     config: RunnableConfig = {"configurable": {"thread_id": "t1"}, "metadata": {"run_id": "r1"}}
 
     with pytest.raises(GraphDrained):

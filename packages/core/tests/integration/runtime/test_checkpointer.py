@@ -1,26 +1,18 @@
 import uuid
 from collections.abc import AsyncIterator
-from typing import TypedDict
 
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.errors import GraphDrained
-from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import RunControl
+from langgraph.types import Durability
 
-from graph_agent._internal.db.pool import open_checkpointer_pool
-from graph_agent._internal.runtime.checkpointer import (
-    CheckpointerPool,
-    create_checkpointer,
-    setup_checkpointer,
-)
+from drain_graph import build_drain_graph
+from graph_agent._internal.db.pool import CheckpointerPool, open_checkpointer_pool
+from graph_agent._internal.runtime.checkpointer import create_checkpointer, setup_checkpointer
 
 POOL_MAX_SIZE = 3
-
-
-class State(TypedDict):
-    trace: list[str]
 
 
 @pytest.fixture
@@ -44,38 +36,26 @@ async def test_setup_twice_then_put_get(pool: CheckpointerPool) -> None:
     assert tup.checkpoint["id"] == checkpoint["id"]
 
 
-async def test_run_id_round_trip_and_drain_resume(pool: CheckpointerPool) -> None:
+@pytest.mark.parametrize("durability", ["sync", "async", "exit"])
+async def test_run_id_round_trip_and_drain_resume(
+    pool: CheckpointerPool, durability: Durability
+) -> None:
     """S1: `metadata.run_id` survives on AsyncPostgresSaver and a drained run resumes with None."""
     await setup_checkpointer(pool)
     saver = create_checkpointer(pool)
     control = RunControl()
     calls: list[str] = []
-
-    def first(state: State) -> State:
-        calls.append("first")
-        control.request_drain()
-        return {"trace": ["first"]}
-
-    def second(state: State) -> State:
-        calls.append("second")
-        return {"trace": [*state["trace"], "second"]}
-
-    builder = StateGraph(State)
-    builder.add_node("first", first)
-    builder.add_node("second", second)
-    builder.add_edge(START, "first")
-    builder.add_edge("first", "second")
-    builder.add_edge("second", END)
-    graph = builder.compile(checkpointer=saver)
+    graph = build_drain_graph(saver, control, calls)
     thread, run_id = str(uuid.uuid4()), str(uuid.uuid4())
     config: RunnableConfig = {"configurable": {"thread_id": thread}, "metadata": {"run_id": run_id}}
 
     with pytest.raises(GraphDrained):
-        await graph.ainvoke({"trace": []}, config, control=control)
+        await graph.ainvoke({"trace": []}, config, control=control, durability=durability)
+    assert calls == ["first"]
     tup = await saver.aget_tuple({"configurable": {"thread_id": thread}})
     assert tup is not None
     assert tup.metadata.get("run_id") == run_id
 
-    result = await graph.ainvoke(None, config, control=RunControl())
+    result = await graph.ainvoke(None, config, control=RunControl(), durability=durability)
     assert result["trace"] == ["first", "second"]
     assert calls == ["first", "second"]

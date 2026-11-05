@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 MIN_POOL_SIZE = 1
 
+type CheckpointerPool = AsyncConnectionPool[AsyncConnection[DictRow]]
+
 
 async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
     """Pool for repositories and the migration runner."""
@@ -24,9 +26,7 @@ async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
     return pool
 
 
-async def open_checkpointer_pool(
-    url: str, max_size: int
-) -> AsyncConnectionPool[AsyncConnection[DictRow]]:
+async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
     """Pool settings required by `AsyncPostgresSaver`."""
     pool = AsyncConnectionPool(
         url,
