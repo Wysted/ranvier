@@ -59,9 +59,9 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
 "fastapi.responses.ORJSONResponse".msg = "Deprecated in FastAPI."
 
 [tool.ruff.lint.per-file-ignores]
-# shortcut: ruff cannot scope one banned module per path, so agents/mcp.py and tests/ switch off
-# the whole banned-api table (incl. the "everywhere" bans); split by path if that ever bites.
-"src/graph_agent/_internal/agents/mcp.py" = ["TID251"]
+# shortcut: ruff cannot scope one banned module per path, so tests/ switch off the whole
+# banned-api table (incl. the "everywhere" bans); split by path if that ever bites.
+# agents/mcp.py gets no file ignore: its mcp/httpx2 imports carry a line-level `# noqa: TID251`.
 "tests/**" = ["TID251"]
 
 [tool.mypy]
@@ -189,6 +189,21 @@ ignore_imports = [
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
+name = "C5c provider integrations only in llm"
+type = "forbidden"
+source_modules = ["graph_agent"]
+forbidden_modules = ["langchain_openai", "langchain_anthropic", "langchain_ollama"]
+ignore_imports = [
+    "graph_agent._internal.llm -> langchain_openai",
+    "graph_agent._internal.llm -> langchain_anthropic",
+    "graph_agent._internal.llm -> langchain_ollama",
+    "graph_agent._internal.llm.** -> langchain_openai",
+    "graph_agent._internal.llm.** -> langchain_anthropic",
+    "graph_agent._internal.llm.** -> langchain_ollama",
+]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
 name = "C6a opentelemetry and openinference only in observability.otlp"
 type = "forbidden"
 source_modules = ["graph_agent"]
@@ -201,6 +216,7 @@ ignore_imports = [
 ]
 unmatched_ignore_imports_alerting = "none"
 
+# shortcut: wildcards because exact names crash lint-imports while observability/otlp.py and tracing.py do not exist; replace with exact module names when they land.
 [[tool.importlinter.contracts]]
 name = "C6b only observability.tracing imports observability.otlp"
 type = "protected"
