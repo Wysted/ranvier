@@ -8,7 +8,7 @@ unblocks: [T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T32-usage-ledger
-status: todo
+status: done
 ---
 
 ## Goal
