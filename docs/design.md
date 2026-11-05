@@ -161,7 +161,8 @@ class AgentSpec:
     response_format: type | None = None
 
 
-def as_tool(agent: CompiledStateGraph, *, name: str, description: str) -> BaseTool: ...
+def as_tool(agent: CompiledStateGraph, *, name: str, description: str, timeout_s: float | None = None) -> BaseTool: ...
+# timeout_s=None: no per-tool timeout for the subagent (the run timeout bounds it)
 ```
 
 Event emission, interrupts, `Command`, `Send` and subgraphs are plain LangGraph (`get_stream_writer()`, `interrupt()`); the platform adds no helper for them.
@@ -329,7 +330,7 @@ State is JSON-serializable by convention; a value the encoder cannot serialize p
 
 ## 7. Agents kit
 
-`await ctx.agent(spec)` builds `create_agent(model=ctx.model(spec.profile)` tagged with the agent name (section 9, usage ledger)`, tools=registry(spec.tools) + mcp(spec.mcp_servers), system_prompt=..., middleware=[SkillsMiddleware(spec.skills), *spec.middleware], response_format=..., name=spec.name)`. No checkpointer is passed: as a node it uses the parent's, as a tool it is stateless per call.
+`await ctx.agent(spec)` builds `create_agent(model=ctx.model(spec.profile)` tagged with the agent name (section 9, usage ledger)`, tools=registry(spec.tools) + mcp(spec.mcp_servers), system_prompt=..., middleware=[SkillsMiddleware(spec.skills), *spec.middleware], response_format=..., name=spec.name)`. No checkpointer is passed: as a node or as a tool it uses the parent's (a tool call gets its own checkpoint namespace).
 
 | Piece | v0.1 behavior |
 |-------|---------------|
@@ -354,7 +355,7 @@ timeout_s = 30
 | Pattern | How | Trade-off |
 |---------|-----|-----------|
 | As a node | `builder.add_node("research", agent)` when the parent state has `messages`; otherwise a wrapper node mapping state in and out | Visible to `get_state(subgraphs=True)`, interrupts work |
-| As a tool | `as_tool(agent, name=..., description=...)` handed to another agent | Isolated context; not inspectable per subagent |
+| As a tool | `as_tool(agent, name=..., description=..., timeout_s=None)` handed to another agent | Isolated message context; runs as a subgraph of the calling node, so its checkpoints live in a per-call namespace of the parent thread and an `interrupt()` inside it resumes without repeating earlier LLM calls; no per-tool timeout unless `timeout_s` is set |
 
 ### Extras as extension points (not implemented in v0.1)
 
