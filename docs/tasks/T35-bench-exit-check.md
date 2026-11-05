@@ -8,7 +8,7 @@ unblocks: []
 owner: sa-build-py
 reviewer: sa-review-py
 branch: task/T35-bench-exit-check
-status: todo
+status: done
 ---
 
 ## Goal
