@@ -8,7 +8,7 @@ unblocks: [T24]
 owner: sa-debug-py
 reviewer: sa-review-py
 branch: task/S4-procrastinate-checkpointer
-status: todo
+status: done
 ---
 
 ## Goal

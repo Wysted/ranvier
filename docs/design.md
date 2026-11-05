@@ -184,7 +184,7 @@ max_concurrency = 8        # LangGraph per-run max_concurrency
 config = { language = "es" }
 
 [[flows.summarize.crons]]
-schedule = "0 3 * * *"     # UTC only; each firing starts a new thread
+schedule = "0 3 * * *"     # UTC only, exactly 5 fields; each firing starts a new thread
 input = { source = "daily" }
 
 [tools.web_search]
@@ -193,6 +193,8 @@ timeout_s = 30
 max_concurrency = 4
 isolation = "async"        # async | thread | process
 ```
+
+Crons: when a worker starts after missed firings, only the latest one runs, and only if it is at most `max_delay` old (Procrastinate `App(periodic_defaults={"max_delay": ...})`, default 600 s); earlier ones are dropped. A firing can be deferred twice (lagging deferrer: Procrastinate only dedupes the latest timestamp per periodic id), so a firing's run and thread ids are `uuid5` of (periodic_id, timestamp) and its insert ignores conflicts (S4).
 
 Profiles, MCP servers and limits live in the same file (sections 7-10).
 
@@ -208,7 +210,7 @@ Flows are compiled lazily on first use per process and cached; a build failure f
 
 ### Validation: `graph-agent validate [--diagram] [--offline]`
 
-Imports every flow and tool target, checks the object kind, builds factories (with fake models and no MCP when `--offline`), compiles against `InMemorySaver`, checks names (`^[a-z][a-z0-9_]{0,62}$`), versions (positive int), cron expressions, referenced profiles and MCP servers. `--diagram` prints Mermaid per flow. Exit code non-zero on any error; errors name the manifest key.
+Imports every flow and tool target, checks the object kind, builds factories (with fake models and no MCP when `--offline`), compiles against `InMemorySaver`, checks names (`^[a-z][a-z0-9_]{0,62}$`), versions (positive int), cron expressions (exactly 5 fields: a 6th field would be seconds as the last column), referenced profiles and MCP servers. `--diagram` prints Mermaid per flow. Exit code non-zero on any error; errors name the manifest key.
 
 ### Persisted contracts
 
@@ -267,9 +269,9 @@ Invariant: partial unique index on `(thread_id) WHERE status = 'running'`: at mo
 
 | Mechanism | How |
 |-----------|-----|
-| Per-thread order (queued runs) | Procrastinate job `execute_run` deferred with `lock=thread_id` and `queueing_lock=run_id` (at most one queued job per run; `AlreadyEnqueued` is ignored) |
+| Per-thread order (queued runs) | Procrastinate job `execute_run` deferred with `lock=thread_id` and `queueing_lock=run_id` (at most one `todo` job per run; `AlreadyEnqueued` is ignored; a job deferred while the run's job is `doing` is accepted and exits at the claim). Order per lock is strict FIFO as long as all jobs share one priority (fetch orders by priority, then id), so `execute_run` never sets `priority=`: a job waiting for its retry (`thread_busy` backoff, stalled requeue) blocks later jobs of the same thread (S4) |
 | Per-thread exclusion (all paths) | Partial unique index; inline run on a busy thread gets `409 thread_busy`; a queued job hitting it retries with backoff |
-| Stalled jobs | Periodic task (every minute): `job_manager.get_stalled_jobs()` then `retry_job()` (worker heartbeats) |
+| Stalled jobs | Periodic task (every minute; duplicate firings are deduped by `queueing_lock` while `todo`; the sweep is safe to run twice (advisory xact lock)): `job_manager.get_stalled_jobs(seconds_since_heartbeat=30)` then `retry_job(job)` for each, BEFORE the orphan re-defer of the same sweep; if `retry_job` raises `UniqueViolation` on the queueing lock (a `todo` job for that run already exists), close the stalled job with `finish_job(job, status=FAILED, delete_job=False)` so the thread lock frees; errors are handled per job (a job that left `doing` meanwhile is skipped). Worker `update_heartbeat_interval=10`, `stalled_worker_timeout=30` (Procrastinate defaults, S4). Nothing else requeues a dead worker's job, and it holds its thread's lock until requeued or closed (worst case ~90 s); `retry_job` adds a Procrastinate attempt. The sweep is registered with `queueing_lock="sweep"` and no `lock=` (a dead sweep would block every later one); concurrent sweeps are excluded by `pg_try_advisory_xact_lock(<named constant>)` in a transaction on a dedicated connection held for the whole sweep (not acquired: return; released when Postgres sees the connection close; server keepalives set on that connection (`tcp_keepalives_*` via `options=-c ...`) bound a lost host to ~25 s) |
 | Orphan runs | Same periodic task: `running` runs with an expired lease are re-deferred without a status change (covers API crashes of inline runs); `pending` runs older than `runs.pending_redefer_s` are re-deferred too (covers a crash between creating the row and deferring its job) |
 | Checkpoint growth | Periodic prune: `keep_latest` for threads idle more than `threads.ttl_days`, `delete_thread` past a second TTL |
 
@@ -384,7 +386,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | Run timeout | `asyncio.timeout` around the stream; error `run_timeout` | `flows.<f>.timeout_s` (600) |
 | Node timeout | Native LangGraph 1.2 `add_node(..., timeout=TimeoutPolicy(...))` (async nodes) and `error_handler=` for compensation; the platform does not wrap nodes, the starter documents the pattern | set in the flow |
 | Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); release each drained run's lease (`release_for_drain`) and defer it; the next claim resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
-| Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup. `AsyncPostgresSaver` takes a per-instance `asyncio.Lock` on every DB call (reads included; langgraph-checkpoint-postgres 3.2.0, issue #7259): the platform's saver subclass replaces it with a semaphore sized to the pool when built over a pool (each call gets its own pooled connection), `shortcut:` until upstream fixes it | `database.*_pool_max` (5, 10, 5) |
+| Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup. `AsyncPostgresSaver` takes a per-instance `asyncio.Lock` on every DB call (reads included; langgraph-checkpoint-postgres 3.2.0, issue #7259): the platform's saver subclass replaces it with a semaphore sized to the pool when built over a pool (each call gets its own pooled connection), `shortcut:` until upstream fixes it  Worker processes also hold one standalone Procrastinate LISTEN connection outside its pool (+1 in the budget), and a running sweep holds one dedicated lock connection (+1). One `PooledPostgresSaver` per process; measured 3.5-5x upstream's throughput at pool 5 and ~5x at pool 10, 2 ms RTT (S4). | `database.*_pool_max` (5, 10, 5) |
 | Loop health | Lag sampler (sleep drift every 1 s): gauge, warning over threshold, `/readyz` | `limits.loop_lag_warn_ms` (100) |
 | Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another, except that a transport failure after an MCP response started fails every in-flight call on that MCP server (each an error `ToolMessage`; the next call reconnects; mcp 2.3.0, python-sdk #1393, S2); supersteps are transactional | none |
 | Blocking-call detection | `blockbuster` in the platform CI and in the starter CI | none |
@@ -435,9 +437,9 @@ Money is never stored: `graph-agent usage` prices rows at read time with `genai-
 
 | Schema | Owner | Setup |
 |--------|-------|-------|
-| `graph_agent` (`runs`, `usage`, `schema_version`) | graph-agent | `migrate`: numbered SQL files, one transaction, advisory lock **(OD-5)** |
+| `graph_agent` (`runs`, `usage`, `schema_version`, `procrastinate_migrations`) | graph-agent | `migrate`: numbered SQL files, one transaction, advisory lock **(OD-5)** |
 | LangGraph checkpoints | `langgraph-checkpoint-postgres` | `AsyncPostgresSaver.setup()`; pool with `autocommit=True`, `prepare_threshold=0`, `dict_row` |
-| Procrastinate | Procrastinate | Its schema manager (upgrade path: open check) |
+| Procrastinate | Procrastinate | `migrate`: fresh DB -> `schema.sql` + record every shipped migration file name as applied; existing DB -> apply shipped files not yet recorded, in name order, one transaction each, under the migrations advisory lock; record table `graph_agent.procrastinate_migrations`. Upgrading Procrastinate requires stopping the API and workers before `migrate` (pre and post files applied together); see S4 |
 
 ## 11. Testing
 
@@ -551,7 +553,6 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 |-------|----------------|
 | OpenAI/Azure Chat Completions accept image parts inside `role=tool` messages (LangChain emits `image_url` parts there; MCP session behavior itself resolved by S2) | MCP results, profiles using OpenAI/Azure |
 | Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
-| Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
 | Studio via `langgraph dev` can load a shim that builds factories with a dev `FlowContext` | Dev experience |
 | langgraph on 3.14: S5 passed with langgraph 1.2.19 / checkpoint-postgres 3.2.0 (classifiers still stop at 3.13; CI keeps testing 3.14 on every bump) | Runtime image |
 | Lease expiry while the owner is alive (event-loop stall) cannot double-run: the sweep only requeues if the conditional claim wins and the partial unique index holds | Never run a thread twice |
