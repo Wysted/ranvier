@@ -75,11 +75,21 @@ def test_missing_default_config_is_fine() -> None:
     assert make().api.port == DEFAULT_API_PORT
 
 
-def test_unknown_top_level_toml_key_tolerated(
+def test_unknown_top_level_toml_key_names_the_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _toml(tmp_path, monkeypatch, "[flows.x]\ntarget = 'a:b'\n")
-    make()
+    _toml(tmp_path, monkeypatch, "[flowz.x]\ntarget = 'a:b'\n")
+    with pytest.raises(ValidationError, match="flowz"):
+        make()
+
+
+def test_dotenv_tolerates_unrelated_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _dotenv(
+        tmp_path,
+        monkeypatch,
+        "OPENAI_API_KEY=sk-x\nGRAPH_AGENT_CONFIG=other.toml\nGRAPH_AGENT_API__PORT=2222\n",
+    )
+    assert Settings().api.port == 2222
 
 
 def test_unknown_group_key_names_the_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

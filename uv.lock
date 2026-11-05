@@ -518,6 +518,7 @@ name = "graph-agent"
 version = "0.1.0"
 source = { editable = "packages/core" }
 dependencies = [
+    { name = "croniter" },
     { name = "fastapi" },
     { name = "genai-prices" },
     { name = "httpx" },
@@ -551,6 +552,7 @@ otel = [
 
 [package.metadata]
 requires-dist = [
+    { name = "croniter", specifier = ">=6,<7" },
     { name = "fastapi", specifier = ">=0.162.0,<0.163" },
     { name = "genai-prices", specifier = ">=0.2.1,<0.3" },
     { name = "httpx", specifier = ">=0.28.1,<1" },
