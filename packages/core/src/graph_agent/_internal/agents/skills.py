@@ -49,8 +49,13 @@ def _parse_skill(path: Path) -> Skill:
         raise SkillError(f"{path}: unterminated YAML frontmatter") from None
     try:
         meta = yaml.safe_load("\n".join(lines[1:end]))
-    except yaml.YAMLError as exc:
-        raise SkillError(f"{path}: invalid YAML frontmatter: {exc}") from exc
+    except yaml.MarkedYAMLError as exc:
+        # never str(exc): it quotes the offending line, which may hold a secret
+        mark = exc.problem_mark
+        where = f" (frontmatter line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+        raise SkillError(f"{path}: invalid YAML frontmatter: {exc.problem}{where}") from None
+    except yaml.YAMLError:
+        raise SkillError(f"{path}: invalid YAML frontmatter") from None
     if not isinstance(meta, dict):
         raise SkillError(f"{path}: frontmatter must be a mapping")
 

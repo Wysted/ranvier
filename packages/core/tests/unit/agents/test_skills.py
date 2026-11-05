@@ -145,3 +145,10 @@ async def test_end_to_end_through_create_agent() -> None:
     )
     await agent.ainvoke({"messages": [HumanMessage("hi")]})
     assert model.calls[0][0].text.startswith("Be brief.\n\n## Skills")
+
+
+def test_invalid_yaml_error_does_not_quote_the_frontmatter(tmp_path: Path) -> None:
+    _write(tmp_path, "bad", "---\nname: bad\ntoken: hunter2: [oops\n---\n")
+    with pytest.raises(SkillError, match="invalid YAML frontmatter") as exc:
+        load_skills([tmp_path])
+    assert "hunter2" not in str(exc.value) and "line 2" in str(exc.value)

@@ -89,8 +89,12 @@ class FlowRegistry:
             return hit
         if (task := self._building.get(name)) is None:
             task = self._building[name] = asyncio.create_task(self._build_shared(name))
-        # shield: a cancelled waiter must not cancel the build the others wait on
-        return await asyncio.shield(task)
+            # Consume the exception ourselves: with no waiter left asyncio would log it, with the
+            # user's traceback. `wait` never cancels `task`, so a cancelled waiter leaves the
+            # build to the others (`shield` would log the exception of a cancelled waiter's task).
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        await asyncio.wait((task,))
+        return task.result()
 
     async def _build_shared(self, name: str) -> CompiledFlow:
         try:

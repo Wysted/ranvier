@@ -65,6 +65,13 @@ async def duplicate_tool(ctx):
     return _builder()
 
 
+async def duplicate_tool_ghost(ctx):
+    from graph_agent._internal.agents.spec import AgentSpec
+
+    await ctx.agent(AgentSpec(name="a", profile="ghost", tools=("echo", echo)))
+    return _builder()
+
+
 async def uses_tools(ctx):
     names = [t.name for t in ctx.tools("echo", "sync_only", "broken")]
     assert names == ["echo"], names
@@ -299,3 +306,19 @@ target = "MOD:duplicate_tool"
     err = capsys.readouterr().err
     assert "flows.dup.target: agent 'a': duplicate tool name 'echo'" in err  # the real factory
     assert "flows.ok" not in err
+
+
+def test_collision_does_not_hide_an_unknown_profile(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest(
+        """
+[tools.echo]
+target = "MOD:echo"
+[flows.dup]
+target = "MOD:duplicate_tool_ghost"
+"""
+    )
+    assert main(["validate", "--offline"]) == 1
+    err = capsys.readouterr().err
+    assert "unknown LLM profile 'ghost'" in err and "duplicate tool name 'echo'" in err

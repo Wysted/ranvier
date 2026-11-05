@@ -95,9 +95,14 @@ class _ValidationContext:
         # tool objects) go through the real `build_agent`, which resolves them itself.
         self.tools(*(t for t in spec.tools if isinstance(t, str)))
         buildable = [t for t in spec.tools if not isinstance(t, str) or t in self.tool_cache]
-        # `model` notes an unknown profile and yields a fake offline; MCP is never connected.
+        # Resolved first: `build_agent` raises on a collision before it looks at the model, which
+        # would hide an unknown profile. `model` notes it and yields a fake offline; no MCP.
+        model = self.model(spec.profile)
         return await build_agent(
-            replace(spec, tools=buildable), models=self.model, registry=self.registry, mcp=_NoMcp()
+            replace(spec, tools=buildable),
+            models=lambda _p: model,
+            registry=self.registry,
+            mcp=_NoMcp(),
         )
 
 

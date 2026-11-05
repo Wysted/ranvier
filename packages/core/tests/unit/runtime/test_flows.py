@@ -196,3 +196,27 @@ async def test_unknown_flow_and_version_check(user_module: Any) -> None:
         check_version(flow, 2)
     assert ei.value.code == ErrorCode.FLOW_VERSION_MISMATCH
     assert "flows.f.version:" in ei.value.message
+
+
+async def test_concurrent_waiters_get_the_failure_and_a_cancelled_one_logs_nothing(
+    user_module: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    started = asyncio.Event()
+
+    async def factory(ctx: Any) -> Any:
+        started.set()
+        await asyncio.sleep(0.05)
+        raise RuntimeError("password=hunter2")
+
+    user_module.t = factory
+    reg = _registry(f="t")
+    cancelled = asyncio.create_task(reg.get("f"))
+    waiter = asyncio.create_task(reg.get("f"))
+    await started.wait()
+    cancelled.cancel()
+    with pytest.raises(RunError):
+        await waiter
+    await asyncio.sleep(0.05)
+    assert cancelled.cancelled()
+    assert not [r for r in caplog.records if r.name == "asyncio"]
+    assert "hunter2" not in caplog.text
