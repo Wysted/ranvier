@@ -2,8 +2,10 @@
 
 Each run is a loop flow of `--steps` supersteps; every step awaits a fake chat model that sleeps
 `--step-latency-s` (a stand-in for the LLM call). Runs go through `execute_run` against Postgres
-exactly like an inline API run: claim, heartbeat, synchronous checkpoints, usage ledger. The
-script creates a throwaway database on the server of `--admin-url` and drops it at the end.
+like an inline API run minus HTTP and admission (`limits.admit()` is not called): claim,
+heartbeat task, synchronous checkpoints, usage ledger. Runs last seconds, below the default
+`runs.heartbeat_s` (15 s), so no heartbeat is ever written. The script creates a throwaway
+database on the server of `--admin-url` and drops it at the end.
 
     cd packages/core && uv run python ../../bench/bench_runs.py -n 50 --steps 5 --step-latency-s 0.2
 
@@ -178,7 +180,7 @@ async def bench(args: argparse.Namespace) -> dict[str, Any]:
         settings = Settings(
             _env_file=None,
             database=DatabaseSettings(url=SecretStr(url)),
-            limits=LimitsSettings(max_active_runs=args.n, admission_wait_s=1, shutdown_grace_s=10),
+            limits=LimitsSettings(shutdown_grace_s=10),
             flows={
                 FLOW: FlowSpec(
                     target=FLOW_TARGET,

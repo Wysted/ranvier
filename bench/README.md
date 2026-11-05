@@ -21,12 +21,16 @@ uv run python ../../bench/bench_runs.py -n 50 --steps 5 --step-latency-s 0.2
 
 | Argument | Default | Meaning |
 |----------|---------|---------|
-| `-n` | 50 | concurrent runs (also `limits.max_active_runs`, so none waits for admission) |
+| `-n` | 50 | concurrent runs (admission is not exercised: runs do not call `limits.admit()`) |
 | `--steps` | 5 | supersteps per run, one fake model call and one checkpoint each |
 | `--step-latency-s` | 0.2 | sleep of the fake model call |
 | `--admin-url` | compose URL | server that may `CREATE DATABASE` |
 
-It prints a JSON summary (exit code 1 if any run did not end `success`):
+It prints a JSON summary as the last stdout line (the migration prints lines before it, so use
+`... | tail -1 | jq`); exit code 1 if any run did not end `success`.
+
+Not exercised: heartbeats (the default `runs.heartbeat_s` is 15 s and runs last 3-8 s, so none is
+written) and run admission. Fields:
 
 - `p50_run_s`, `p95_run_s`, `max_run_s`: row creation to terminal event. Compare with `ideal_run_s`.
 - `max_loop_lag_ms`: worst overshoot of a 10 ms sleep (own sampler); `container_max_loop_lag_ms` is

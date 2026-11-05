@@ -33,12 +33,14 @@ loop. All runs ended `success`. Run times are row creation to terminal event.
 | 200 | 20 | 0 s (overhead only) | 0 s | 8.151 s | 8.473 s | 3.8 ms | 4.2 ms | 136.8 / 149.1 MiB | 149.1 MiB |
 
 Reading:
-- Platform overhead per run at N=200 with a 2.5 s ideal: +0.8 s at p50 (0.8 s over 5 steps), and
+- Platform overhead per run at N=200 with a 2.5 s ideal: +0.8 s at p50 (about 0.16 s per step), and
   the loop never lagged more than 6 ms (warn threshold 100 ms, readiness 1000 ms).
 - The last row removes the model: 4000 synchronous checkpointed supersteps in 8.5 s, about 470
   steps/s through one process and the 10-connection checkpointer pool. That is the platform
   ceiling for flows with no model latency; real flows are bounded by the LLM.
 - Memory grows roughly 0.07 MiB per concurrent run over the 137 MiB baseline.
+- Heartbeats were never exercised: the default `runs.heartbeat_s` is 15 s and runs lasted 3-8 s.
+  Run admission (`limits.admit()`) is not called by the bench either.
 - Not measured: CPU-pool (process isolation) flows, MCP, real providers, several processes.
 - The pools were left at their defaults, so N=200 shares 5 + 10 connections. Larger N was not
   tried to keep the machine usable.
@@ -71,13 +73,47 @@ How the compose stack was brought up (so the result can be repeated):
   `uv.lock` was rewritten to `file:///gitsrv/graph-agent.git`, and one line `COPY gitsrv /gitsrv`
   was added to the rendered Dockerfile. Nothing else differs from the template output.
 
+Exact override (`<dummy.vars>` is a file outside the repo, not named `.env*`; the project dir is the
+rendered starter):
+
+```yaml
+# override.yml
+x-dummy: &dummy
+  env_file: !override
+    - <dummy.vars>
+services:
+  db:
+    ports: !override []
+  migrate: *dummy
+  api:
+    <<: *dummy
+    ports: !override
+      - "127.0.0.1:18000:8000"
+  worker: *dummy
+```
+
+```bash
+docker compose -p t35exit -f docker-compose.yml -f override.yml up -d --build
+docker compose -p t35exit -f docker-compose.yml -f override.yml down -v --rmi local
+```
+
+Exact pin rewrite (run in the rendered starter after `uv lock`; `$CLONE` is the throwaway clone
+tagged `v0.1.0-exitcheck`, rendered with `graph_agent_repo=file://$CLONE`):
+
+```bash
+mkdir gitsrv && cp -a "$CLONE" gitsrv/graph-agent.git
+sd -F "$CLONE" "/gitsrv/graph-agent.git" pyproject.toml uv.lock
+sd '^COPY pyproject.toml uv.lock \./' 'COPY gitsrv /gitsrv
+COPY pyproject.toml uv.lock ./' Dockerfile
+```
+
 ## Failing items
 
-None failed. Open points, none blocking v0.1:
+None failed. Open points (2 is a pre-condition for the tag):
 
 1. `research` was not exercised end to end (no Ollama, no real MCP server). Owner of the flow: T31.
-2. `starter/.env.example` does not exist in the template (a permission rule blocks `.env*` files for
-   agents; the user adds it). Without it `serve` in the compose stack stops at
+2. PRE-CONDITION FOR THE v0.1 TAG (user action): `starter/.env.example` does not exist in the
+   template (a permission rule blocks `.env*` files for agents; the user adds it). Without it `serve` in the compose stack stops at
    `api.keys.admin: env var 'API_KEY_ADMIN' is unset or empty` (correct, fail-loud behavior, but the
    README points to a missing file). Task T34.
 3. The rendered starter cannot be built or locked without a remote git URL for graph-agent
