@@ -38,7 +38,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T30 | `agents/factory.py`: `build_agent`, `as_tool`, `ctx.agent(spec)` | 9 | T08, T12, T27, T28, T29 | sa-dev-py | [T30](tasks/T30-agent-factory.md) | done |
 | T31 | `examples/` research flow (subagent + MCP) with tests | 9 | T20, T30 | sa-dev-py | [T31](tasks/T31-example-research.md) | todo |
 | T32 | `usage.py`: ledger callback, repository, `usage` CLI report (genai-prices at read time) | 10 | T06, T15 | sa-dev-py | [T32](tasks/T32-usage-ledger.md) | done |
-| T33 | OTel span attributes and metrics in the runner (incl. loop lag gauge) | 10 | T10, T16 | sa-dev-py | [T33](tasks/T33-otel-runner.md) | todo |
+| T33 | OTel span attributes and metrics in the runner (incl. loop lag gauge) | 10 | T10, T16 | sa-dev-py | [T33](tasks/T33-otel-runner.md) | done |
 | T34 | `starter/` Copier template + `copier update` docs | 11 | T20, T23, T24 | sa-dev-py | [T34](tasks/T34-starter-copier.md) | todo |
 | T35 | Bench run and exit check | 12 | all | sa-build-py | [T35](tasks/T35-bench-exit-check.md) | todo |
 
