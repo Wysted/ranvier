@@ -138,6 +138,7 @@ class Claim:
 @dataclass(frozen=True, slots=True)
 class ExpiredRuns:
     exhausted: list[uuid.UUID]  # moved to error / orphan_retries_exhausted
+    cancelled: list[uuid.UUID]  # cancel was requested: moved to cancelled, nothing to run
     redefer: list[uuid.UUID]  # expired with attempts left: the caller defers `execute_run` again
 
 
@@ -153,7 +154,9 @@ RETURNING {_COLUMNS}
 """
 
 # `attempt` counts claims, so a run is claimed at most `max_attempts` times. A run with a pending
-# cancel request is claimed straight into `cancelled` (its attempt is not consumed).
+# cancel request is claimed straight into `cancelled` (its attempt is not consumed), even when
+# exhausted: cancel beats exhaustion. An unexpired lease is never claimable, so a live run is
+# never cancelled here.
 _CLAIM: LiteralString = f"""
 UPDATE graph_agent.runs
 SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'running' END,
@@ -163,7 +166,7 @@ SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'running' END,
     attempt = CASE WHEN cancel_requested THEN attempt ELSE attempt + 1 END,
     started_at = CASE WHEN cancel_requested THEN started_at ELSE COALESCE(started_at, now()) END,
     finished_at = CASE WHEN cancel_requested THEN now() ELSE finished_at END
-WHERE run_id = %(run_id)s AND attempt < %(max_attempts)s
+WHERE run_id = %(run_id)s AND (attempt < %(max_attempts)s OR cancel_requested)
   AND (status = 'pending' OR (status = 'running' AND lease_expires_at < now()))
 RETURNING {_COLUMNS}
 """
@@ -193,10 +196,11 @@ WHERE run_id = %(run_id)s AND thread_id = %(thread_id)s AND status IN ('pending'
 RETURNING status
 """
 
-# A drain is not a failure: the lease expires now and the attempt is given back.
+# A drain is not a failure: the lease expires now and the attempt is given back. The fence token
+# is rotated so the draining owner can no longer heartbeat or finish.
 _RELEASE_FOR_DRAIN: LiteralString = """
 UPDATE graph_agent.runs
-SET lease_expires_at = now(), attempt = GREATEST(attempt - 1, 0)
+SET lease_owner = %(new_token)s, lease_expires_at = now(), attempt = GREATEST(attempt - 1, 0)
 WHERE run_id = %(run_id)s AND lease_owner = %(token)s AND status = 'running'
 RETURNING run_id
 """
@@ -204,15 +208,18 @@ RETURNING run_id
 _EXPIRED: LiteralString = """
 WITH moved AS (
     UPDATE graph_agent.runs
-    SET status = 'error', error = %(error)s, finished_at = now(),
-        lease_owner = NULL, lease_expires_at = NULL
-    WHERE status = 'running' AND lease_expires_at < now() AND attempt >= %(max_attempts)s
-    RETURNING run_id
+    SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'error' END,
+        error = CASE WHEN cancel_requested THEN NULL ELSE %(error)s END,
+        finished_at = now(), lease_owner = NULL, lease_expires_at = NULL
+    WHERE status = 'running' AND lease_expires_at < now()
+      AND (attempt >= %(max_attempts)s OR cancel_requested)
+    RETURNING run_id, status
 )
-SELECT run_id, true AS exhausted FROM moved
+SELECT run_id, status FROM moved
 UNION ALL
-SELECT run_id, false FROM graph_agent.runs
-WHERE status = 'running' AND lease_expires_at < now() AND attempt < %(max_attempts)s
+SELECT run_id, status FROM graph_agent.runs
+WHERE status = 'running' AND lease_expires_at < now()
+  AND attempt < %(max_attempts)s AND NOT cancel_requested
 """
 
 _STALE_PENDING: LiteralString = """
@@ -349,12 +356,18 @@ class RunsRepository:
     async def release_for_drain(self, run_id: uuid.UUID, token: str) -> bool:
         """Graceful drain: expire the lease now and give the attempt back; status stays running.
 
-        False if the lease was lost. The caller defers `execute_run`; the next claim takes over.
+        Rotates the fence token, so the caller can no longer heartbeat or finish. False if the
+        lease was lost. The caller defers `execute_run`; the next claim takes over.
         """
-        return bool(await self._fetch(_RELEASE_FOR_DRAIN, {"run_id": run_id, "token": token}))
+        rows = await self._fetch(
+            _RELEASE_FOR_DRAIN,
+            {"run_id": run_id, "token": token, "new_token": f"drained:{uuid.uuid4().hex}"},
+        )
+        return bool(rows)
 
     async def expired(self, max_attempts: int) -> ExpiredRuns:
-        """Orphan sweep. Exhausted runs move to `error`; the rest keep `running` for re-deferral."""
+        """Orphan sweep. Exhausted runs move to `error`, cancel-requested ones to `cancelled`; the
+        rest keep `running` for re-deferral."""
         error = RunError(
             ErrorCode.ORPHAN_RETRIES_EXHAUSTED,
             f"run lost its lease {max_attempts} times",
@@ -363,9 +376,15 @@ class RunsRepository:
         rows = await self._fetch(
             _EXPIRED, {"max_attempts": max_attempts, "error": Jsonb(error.as_dict())}
         )
-        out = ExpiredRuns(exhausted=[], redefer=[])
+        out = ExpiredRuns(exhausted=[], cancelled=[], redefer=[])
         for row in rows:
-            (out.exhausted if row["exhausted"] else out.redefer).append(row["run_id"])
+            match RunStatus(row["status"]):
+                case RunStatus.ERROR:
+                    out.exhausted.append(row["run_id"])
+                case RunStatus.CANCELLED:
+                    out.cancelled.append(row["run_id"])
+                case _:
+                    out.redefer.append(row["run_id"])
         return out
 
     async def stale_pending(self, older_than_s: float) -> list[uuid.UUID]:

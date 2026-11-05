@@ -134,6 +134,12 @@ def test_lease_must_span_two_heartbeats() -> None:
     assert make(runs={"heartbeat_s": 10, "lease_s": 20}).runs.lease_s == 20
 
 
+def test_pending_redefer_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="pending_redefer_s"):
+        make(runs={"pending_redefer_s": 0})
+    assert make().runs.pending_redefer_s > 0
+
+
 def test_explicit_no_env_file_beats_env_file_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

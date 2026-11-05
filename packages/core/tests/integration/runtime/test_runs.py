@@ -194,6 +194,15 @@ async def test_cancel_requested_is_claimed_into_cancelled(
     assert stored.lease_owner is None
 
 
+async def test_cancel_requested_with_live_lease_is_never_claimed(repo: RunsRepository) -> None:
+    run = await _new(repo)
+    token = await _claim(repo, run)
+    await repo.request_cancel(run.run_id, run.thread_id)
+    assert (await repo.claim(run.run_id, "b", LEASE_S, MAX_ATTEMPTS)).outcome is ClaimOutcome.LOST
+    assert (await _get(repo, run)).status is RunStatus.RUNNING
+    assert await repo.heartbeat(run.run_id, token, LEASE_S) is True
+
+
 async def test_finish_validates_status_and_error(repo: RunsRepository) -> None:
     run = await _new(repo)
     token = await _claim(repo, run)
@@ -217,6 +226,10 @@ async def test_drain_release_keeps_attempt_and_is_reclaimable(repo: RunsReposito
         token = await _claim(repo, run)
         assert not await repo.release_for_drain(run.run_id, "other")
         assert await repo.release_for_drain(run.run_id, token)
+        # The drained owner is fenced out.
+        assert await repo.heartbeat(run.run_id, token, LEASE_S) is None
+        assert not await repo.finish(run.run_id, token, RunStatus.SUCCESS)
+        assert not await repo.release_for_drain(run.run_id, token)
     stored = await _get(repo, run)
     assert (stored.status, stored.attempt) == (RunStatus.RUNNING, 0)
     await _claim(repo, run)
@@ -244,6 +257,27 @@ async def test_expired_sweep_and_exhaustion(
     # Recovery never writes pending.
     assert (await _get(repo, retry)).status is RunStatus.RUNNING
     assert (await _get(repo, alive)).status is RunStatus.RUNNING
+
+
+async def test_exhausted_and_cancel_requested_ends_cancelled(
+    repo: RunsRepository, pool: AsyncConnectionPool
+) -> None:
+    swept, claimed = await _new(repo), await _new(repo)
+    for run in (swept, claimed):
+        for _ in range(MAX_ATTEMPTS):
+            await _claim(repo, run)
+            await _expire_lease(pool, run.run_id)
+        await repo.request_cancel(run.run_id, run.thread_id)
+    claim = await repo.claim(claimed.run_id, "a", LEASE_S, MAX_ATTEMPTS)
+    assert claim.outcome is ClaimOutcome.CANCELLED
+    result = await repo.expired(max_attempts=MAX_ATTEMPTS)
+    assert result.cancelled == [swept.run_id]
+    assert result.exhausted == result.redefer == []
+    for run in (swept, claimed):
+        stored = await _get(repo, run)
+        assert stored.status is RunStatus.CANCELLED
+        assert stored.error is None
+        assert stored.finished_at is not None
 
 
 async def test_stale_pending(repo: RunsRepository, pool: AsyncConnectionPool) -> None:
