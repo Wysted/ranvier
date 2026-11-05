@@ -8,7 +8,7 @@ unblocks: [T14, T21, T30, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T12-events-context
-status: todo
+status: done
 ---
 
 ## Goal
