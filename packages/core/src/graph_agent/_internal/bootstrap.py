@@ -30,6 +30,7 @@ from graph_agent._internal.db.pool import (
 from graph_agent._internal.limits import CpuPool, Limits, LoopLagSampler, install_default_executor
 from graph_agent._internal.llm import LlmRegistry
 from graph_agent._internal.observability.tracing import Observability, setup_observability
+from graph_agent._internal.queue import ProcrastinateRunQueue, make_app
 from graph_agent._internal.runtime.checkpointer import (
     Checkpointer,
     create_checkpointer,
@@ -101,6 +102,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
         app_pool: AsyncConnectionPool | None = None
         cp_pool: CheckpointerPool | None = None
         runs: RunsRepository | None = None
+        queue: RunQueue | None = None
         if memory:
             checkpointer: Checkpointer = create_memory_checkpointer()
         else:
@@ -114,6 +116,9 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             runs = RunsRepository(app_pool)  # the pool owns the connections: no teardown
             cp_pool = await open_checkpointer_pool(url, db.checkpointer_pool_max)
             stack.push_async_callback(cp_pool.close)
+            queue_app = make_app(settings)
+            await stack.enter_async_context(queue_app.open_async())
+            queue = ProcrastinateRunQueue(queue_app)
             for label, pool in (("app", app_pool), ("checkpointer", cp_pool)):
                 gauges[f"db_pool_{label}_size"] = _pool_stat(pool, "pool_size")
                 gauges[f"db_pool_{label}_waiting"] = _pool_stat(pool, "requests_waiting")
@@ -183,6 +188,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             shutdown_budget=budget,
             flows=flows,
             active_runs=active_runs,
+            queue=queue,
             # Memory mode has no ledger: the runner still counts for the `end` event.
             observers=[UsageObserver(UsageRepository(app_pool))] if app_pool is not None else [],
         )
