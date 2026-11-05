@@ -17,7 +17,7 @@ from psycopg import AsyncConnection
 
 from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.db.migrate import SCHEMA, MigrationError
-from graph_agent._internal.db.pool import MIN_POOL_SIZE, _pinned_options
+from graph_agent._internal.db.pool import MIN_POOL_SIZE, PIN_SEARCH_PATH, with_options
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def make_app(settings: Settings) -> App:
         max_size=db.procrastinate_pool_max,
         # Pinned like the saver's pool: the Procrastinate tables live in our schema, whatever the
         # role is called. The LISTEN connection is built from the same kwargs.
-        kwargs={"options": _pinned_options(db.url.get_secret_value())},
+        kwargs={"options": with_options(db.url.get_secret_value(), PIN_SEARCH_PATH)},
     )
     return App(connector=connector)
 
@@ -99,14 +99,10 @@ async def apply_procrastinate_schema(conn: AsyncConnection[tuple[Any, ...]]) -> 
     Procrastinate tracks nothing itself. A fresh database gets `schema.sql` plus every shipped
     migration name recorded as applied; an existing one gets the shipped files not yet recorded,
     in name order, one transaction each. The caller holds `advisory_lock` (autocommit `conn`) and
-    has applied the SQL migrations (the schema exists). Upgrading Procrastinate needs the API and
-    workers stopped first (S4).
+    has applied the SQL migrations (they create the record table). Upgrading Procrastinate needs
+    the API and workers stopped first (S4).
     """
     schema_sql, migrations = await asyncio.to_thread(_read_schema_files)
-    await conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {PROCRASTINATE_MIGRATIONS} "
-        "(name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
-    )
     cur = await conn.execute("SELECT to_regclass(%s)", (_JOBS_TABLE,))
     row = await cur.fetchone()
     names = [name for name, _ in migrations]

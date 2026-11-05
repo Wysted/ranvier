@@ -137,11 +137,14 @@ class Claim:
     token: str | None = None  # lease token; set only when CLAIMED
 
 
+type RunRef = tuple[uuid.UUID, uuid.UUID]  # (run_id, thread_id): what a defer needs
+
+
 @dataclass(frozen=True, slots=True)
 class ExpiredRuns:
     exhausted: list[uuid.UUID]  # moved to error / orphan_retries_exhausted
     cancelled: list[uuid.UUID]  # cancel was requested: moved to cancelled, nothing to run
-    redefer: list[uuid.UUID]  # expired with attempts left: the caller defers `execute_run` again
+    redefer: list[RunRef]  # expired with attempts left: the caller defers `execute_run` again
 
 
 _COLUMNS: LiteralString = """run_id, thread_id, flow, flow_version, tenant_id, status, input,
@@ -215,30 +218,40 @@ WITH moved AS (
         finished_at = now(), lease_owner = NULL, lease_expires_at = NULL
     WHERE status = 'running' AND lease_expires_at < now()
       AND (attempt >= %(max_attempts)s OR cancel_requested)
-    RETURNING run_id, status
+    RETURNING run_id, thread_id, status
 )
-SELECT run_id, status FROM moved
+SELECT run_id, thread_id, status FROM moved
 UNION ALL
-SELECT run_id, status FROM graph_agent.runs
+SELECT run_id, thread_id, status FROM graph_agent.runs
 WHERE status = 'running' AND lease_expires_at < now()
   AND attempt < %(max_attempts)s AND NOT cancel_requested
 """
 
 _STALE_PENDING: LiteralString = """
-SELECT run_id FROM graph_agent.runs
+SELECT run_id, thread_id FROM graph_agent.runs
 WHERE status = 'pending' AND created_at < now() - make_interval(secs => %s::float8)
 ORDER BY created_at, run_id
 """
 
 # A thread is idle when none of its runs is pending or running and the last one ended (or, for
-# a run that never finished, was created) before the cutoff.
+# a run that never finished, was created) before the cutoff. `idle` is the age of that last
+# activity, measured by the database clock.
 _IDLE_THREADS: LiteralString = """
-SELECT thread_id FROM graph_agent.runs
+SELECT thread_id, now() - max(COALESCE(finished_at, created_at)) AS idle
+FROM graph_agent.runs
 GROUP BY thread_id
 HAVING bool_and(status NOT IN ('pending', 'running'))
    AND max(COALESCE(finished_at, created_at)) < now() - %s
 ORDER BY thread_id
 """
+
+# The same rule for one thread, as a predicate: used right before a delete, because the list
+# above can be minutes old by then.
+_THREAD_ACTIVE: LiteralString = """EXISTS (
+    SELECT 1 FROM graph_agent.runs AS r WHERE r.thread_id = %(thread_id)s
+    AND (r.status IN ('pending', 'running')
+         OR COALESCE(r.finished_at, r.created_at) >= now() - %(idle_for)s)
+)"""
 
 # Cron firings are deterministic (uuid5), so a repeated firing inserts nothing.
 _INSERT_ONCE: LiteralString = """
@@ -431,23 +444,41 @@ class RunsRepository:
                 case RunStatus.CANCELLED:
                     out.cancelled.append(row["run_id"])
                 case _:
-                    out.redefer.append(row["run_id"])
+                    out.redefer.append((row["run_id"], row["thread_id"]))
         return out
 
-    async def stale_pending(self, older_than_s: float) -> list[uuid.UUID]:
-        """Pending runs older than the threshold (a crash between insert and defer)."""
-        return [r["run_id"] for r in await self._fetch(_STALE_PENDING, (older_than_s,))]
+    async def stale_pending(self, older_than_s: float) -> list[RunRef]:
+        """Pending runs older than the threshold (crash between insert and defer), oldest first."""
+        rows = await self._fetch(_STALE_PENDING, (older_than_s,))
+        return [(r["run_id"], r["thread_id"]) for r in rows]
 
-    async def thread_ids(self, run_ids: list[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
-        """Thread of each run (the sweep defers by run and thread)."""
+    async def idle_threads(self, idle_for: timedelta) -> list[tuple[uuid.UUID, timedelta]]:
+        """Threads with no pending or running run whose last activity is older than `idle_for`,
+        with the age of that activity."""
+        rows = await self._fetch(_IDLE_THREADS, (idle_for,))
+        return [(r["thread_id"], r["idle"]) for r in rows]
+
+    async def thread_is_idle(self, thread_id: uuid.UUID, idle_for: timedelta) -> bool:
+        """Fresh per-thread check of the `idle_threads` rule."""
         rows = await self._fetch(
-            "SELECT run_id, thread_id FROM graph_agent.runs WHERE run_id = ANY(%s)", (run_ids,)
+            f"SELECT NOT {_THREAD_ACTIVE} AS idle",
+            {"thread_id": thread_id, "idle_for": idle_for},
         )
-        return {r["run_id"]: r["thread_id"] for r in rows}
+        return bool(rows[0]["idle"])
 
-    async def idle_threads(self, idle_for: timedelta) -> list[uuid.UUID]:
-        """Threads with no pending or running run whose last activity is older than `idle_for`."""
-        return [r["thread_id"] for r in await self._fetch(_IDLE_THREADS, (idle_for,))]
+    async def delete_idle_thread(self, thread_id: uuid.UUID, idle_for: timedelta) -> int:
+        """Delete the thread's runs only if it is still idle (rows deleted: 0 when it is not).
+
+        Unlike `delete_thread` it never touches a thread that got a run since the idle list was
+        built. Prune's delete; the API's explicit delete stays unconditional.
+        """
+        async with self._pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"DELETE FROM graph_agent.runs WHERE thread_id = %(thread_id)s "
+                f"AND NOT {_THREAD_ACTIVE}",
+                {"thread_id": thread_id, "idle_for": idle_for},
+            )
+            return cur.rowcount
 
     async def delete_thread(self, thread_id: uuid.UUID) -> int:
         """Delete the thread's runs; refused (`thread_busy`) while one is running."""

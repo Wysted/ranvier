@@ -409,6 +409,21 @@ async def test_registered_cron_fires_through_the_periodic_deferrer_and_runs(
     assert len(rows) == 1
 
 
+@pytest.fixture
+def public_path_settings(clean_database: str) -> Settings:  # sync: reads the TOML source
+    url = f"{clean_database}?options=-c%20search_path%3Dpublic"
+    return Settings(_env_file=None, database=DatabaseSettings(url=SecretStr(url)))
+
+
+async def test_make_app_pins_the_schema_whatever_the_url_search_path_says(
+    public_path_settings: Settings,
+) -> None:
+    app = make_app(public_path_settings)
+    async with app.open_async():
+        rows = await app.connector.execute_query_all_async(query="SHOW search_path")
+    assert rows == [{"search_path": "graph_agent"}]
+
+
 # --- prune -------------------------------------------------------------------------------------
 
 
@@ -462,6 +477,85 @@ async def test_prune_keeps_the_latest_checkpoint_then_deletes_the_thread(
         # The pruned thread still resumes: its latest checkpoint is intact.
         state = await compiled.aget_state({"configurable": {"thread_id": str(threads["stale"])}})
         assert state.values == {"x": 2}
+
+
+@pytest.fixture
+async def history_graph(res: Resources, clean_database: str) -> AsyncIterator[Any]:
+    """A compiled graph on a real Postgres saver (installed on `res`)."""
+    async with await open_checkpointer_pool(clean_database, 3) as cp_pool:
+        await setup_checkpointer(cp_pool)
+        res.checkpointer = create_checkpointer(cp_pool)
+        graph = StateGraph(State)
+        graph.add_node("a", _step).add_node("b", _step).add_edge(START, "a")
+        graph.add_edge("a", "b").add_edge("b", END)
+        yield graph.compile(checkpointer=res.checkpointer)
+
+
+async def _thread_with_history(
+    res: Resources, graph: Any, pool: AsyncConnectionPool, days: int
+) -> uuid.UUID:
+    thread = uuid.uuid4()
+    await _new_run(res, thread)
+    await graph.ainvoke({"x": 0}, {"configurable": {"thread_id": str(thread)}})
+    await _age(pool, thread, days)
+    return thread
+
+
+class _ReusedRuns(RunsRepository):
+    """A client reuses every idle thread while `keep_latest` is still running (minutes in prod)."""
+
+    async def idle_threads(self, idle_for: timedelta) -> Any:
+        found = await super().idle_threads(idle_for)
+        for thread_id, _ in found:
+            await self.create(thread_id=thread_id, flow=FLOW, flow_version=1, input={})
+        return found
+
+
+async def test_prune_spares_a_thread_reused_after_the_idle_list_was_built(
+    res: Resources, pool: AsyncConnectionPool, history_graph: Any
+) -> None:
+    doomed = await _thread_with_history(
+        res, history_graph, pool, res.settings.threads.delete_after_days + 1
+    )
+    full = await _checkpoints(pool, doomed)
+
+    await prune_threads(res, _ReusedRuns(pool))
+
+    assert await _checkpoints(pool, doomed) == full
+    rows = await _rows(
+        pool, "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at", doomed
+    )
+    assert [r[0] for r in rows] == ["success", "pending"]  # the 202 the client got stays valid
+
+
+async def test_prune_goes_on_after_a_thread_that_cannot_be_pruned(
+    res: Resources,
+    pool: AsyncConnectionPool,
+    history_graph: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs, _ = _parts(res)
+    cfg = res.settings.threads
+    broken = await _thread_with_history(res, history_graph, pool, cfg.ttl_days + 1)
+    stale = await _thread_with_history(res, history_graph, pool, cfg.ttl_days + 1)
+    doomed = await _thread_with_history(res, history_graph, pool, cfg.delete_after_days + 1)
+    full = await _checkpoints(pool, broken)
+    real = res.checkpointer.aprune
+
+    async def aprune(thread_ids: Any, **kwargs: Any) -> None:
+        if str(broken) in thread_ids:
+            raise NotImplementedError("delta channels")  # what upstream raises for such threads
+        await real(thread_ids, **kwargs)
+
+    monkeypatch.setattr(res.checkpointer, "aprune", aprune)
+
+    await prune_threads(res, runs)
+
+    assert await _checkpoints(pool, broken) == full
+    assert await _checkpoints(pool, stale) == 1
+    assert await _checkpoints(pool, doomed) == 0
+    remaining = await _rows(pool, "SELECT DISTINCT thread_id FROM graph_agent.runs")
+    assert {r[0] for r in remaining} == {broken, stale}
 
 
 async def test_prune_ignores_a_thread_with_a_running_run(

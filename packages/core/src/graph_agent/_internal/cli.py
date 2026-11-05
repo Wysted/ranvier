@@ -1,4 +1,5 @@
 import argparse
+import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -36,6 +37,18 @@ def _load_settings() -> "Settings | None":
         for err in exc.errors(include_input=False, include_url=False, include_context=False):
             print(f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}", file=sys.stderr)
     return None
+
+
+LOG_LEVEL = logging.INFO
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def _configure_logging() -> None:
+    """INFO to stderr for the long-running commands, unless the host already set logging up.
+
+    Only entrypoints configure logging; library code just uses `logging.getLogger`.
+    """
+    logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)  # no-op when root has handlers
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -164,6 +177,7 @@ def _add_migrate(sub: SubparsersAction) -> None:
 def _migrate(args: argparse.Namespace) -> int:
     import asyncio
 
+    _configure_logging()
     settings = _load_settings()
     if settings is None:
         return 1
@@ -300,7 +314,6 @@ def _run(args: argparse.Namespace) -> int:
 
 async def _run_memory(settings: "Settings", name: str, input: object, thread_id: "UUID") -> int:
     import asyncio
-    import logging
     import uuid
     from contextlib import aclosing
 
@@ -401,6 +414,7 @@ _COMMANDS.append(_add_run)
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    _configure_logging()
     settings = _load_settings()  # validates up front with readable errors
     if settings is None:
         return 1
@@ -437,6 +451,7 @@ def _worker(args: argparse.Namespace) -> int:
 
     from graph_agent._internal.llm import LlmError
 
+    _configure_logging()
     settings = _load_settings()
     if settings is None:
         return 1
@@ -450,9 +465,9 @@ def _worker(args: argparse.Namespace) -> int:
 
 async def _serve_jobs(settings: "Settings") -> None:
     from graph_agent._internal.bootstrap import open_container
-    from graph_agent._internal.worker import run_worker
+    from graph_agent._internal.worker import WORKER_EXTRA_CONNECTIONS, run_worker
 
-    async with open_container(settings) as container:
+    async with open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container:
         await run_worker(container)
 
 

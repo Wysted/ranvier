@@ -29,12 +29,16 @@ async def open_app_pool(url: str, max_size: int) -> AsyncConnectionPool:
     return pool
 
 
-def _pinned_options(url: str) -> str:
-    """The URL's `options` plus `-c search_path=graph_agent`, which pins the saver tables to our
-    schema whatever the role is called (appended last so it wins over a URL `search_path`)."""
+# Pins our tables to our schema whatever the role is called (a role-named schema or `public`
+# would otherwise win through "$user").
+PIN_SEARCH_PATH = f"-c search_path={SCHEMA}"
+
+
+def with_options(url: str, extra: str) -> str:
+    """The URL's `options` plus `extra`, for the `options` connection kwarg (appended last, so
+    it wins over a URL `search_path`)."""
     existing = conninfo_to_dict(url).get("options")
-    pin = f"-c search_path={SCHEMA}"
-    return f"{existing} {pin}" if existing else pin
+    return f"{existing} {extra}" if existing else extra
 
 
 async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
@@ -49,7 +53,7 @@ async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
             "autocommit": True,
             "prepare_threshold": 0,
             "row_factory": dict_row,
-            "options": _pinned_options(url),
+            "options": with_options(url, PIN_SEARCH_PATH),
         },
         open=False,
     )

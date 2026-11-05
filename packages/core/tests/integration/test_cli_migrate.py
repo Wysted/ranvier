@@ -72,6 +72,25 @@ def test_migrate_applies_then_is_idempotent(
     assert _tables(cli_env) == tables
 
 
+def test_migrate_pins_our_schema_whatever_the_url_search_path_says(
+    cli_env: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The role's "$user" would hide a missing pin: a URL forcing `public` exposes it."""
+    monkeypatch.setenv("GRAPH_AGENT_DATABASE__URL", f"{cli_env}?options=-c%20search_path%3Dpublic")
+    assert main(["migrate"]) == 0
+    capsys.readouterr()
+    with psycopg.connect(cli_env) as conn:
+        rows = conn.execute(
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
+        ).fetchall()
+    by_schema = {schema: {name for s, name in rows if s == schema} for schema, _ in rows}
+    assert set(by_schema) == {"graph_agent"}, by_schema.keys()
+    assert {"runs", "checkpoints", "procrastinate_jobs", "procrastinate_migrations"} <= by_schema[
+        "graph_agent"
+    ]
+
+
 def test_run_persists_then_resumes_on_the_same_thread(
     cli_env: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

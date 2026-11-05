@@ -12,13 +12,13 @@ from contextlib import aclosing
 from datetime import timedelta
 from typing import Final
 
+import psycopg
 from procrastinate import App, RetryStrategy, exceptions, manager
 from procrastinate.jobs import Status
 from psycopg import AsyncConnection
-from psycopg.conninfo import conninfo_to_dict
 
 from graph_agent._internal.config.manifest import CronSpec
-from graph_agent._internal.db.pool import log_connection_budget
+from graph_agent._internal.db.pool import with_options
 from graph_agent._internal.queue import EXECUTE_RUN, ProcrastinateRunQueue
 from graph_agent._internal.runtime.checkpointer import prune_checkpoints
 from graph_agent._internal.runtime.runner import RunnerResources, execute_run
@@ -87,27 +87,31 @@ PRUNE_CRON: Final = "17 3 * * *"  # daily, off the hour
 SWEEP_LOCK_KEY: Final = 0x6772617073776570
 # Heartbeat age after which a job counts as stalled (Procrastinate's `stalled_worker_timeout`).
 STALLED_HEARTBEAT_S: Final = 30
-# A lost host frees the sweep lock in ~25 s: idle 10 + 3 probes x 5 s.
+# A lost host frees the sweep lock in ~25 s: idle 10 + 3 probes x 5 s. The timeout is off so a
+# server-side default cannot kill the connection that holds the lock between statements.
 LOCK_CONN_OPTIONS: Final = (
-    "-c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3"
+    "-c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3 "
+    "-c idle_in_transaction_session_timeout=0"
 )
 LOCK_CONNECT_TIMEOUT_S: Final = 10
-# Procrastinate's standalone LISTEN connection and the sweep's lock connection.
+# Procrastinate's standalone LISTEN connection and the sweep's lock connection (logged by
+# `open_container(extra_connections=...)`).
 WORKER_EXTRA_CONNECTIONS: Final = 2
 CRON_NAMESPACE: Final = uuid.UUID("5d0b8c3e-7a64-4f0e-9a52-6c1b3f8e2d17")
 SWEEP_SKIPPED_METRIC: Final = "sweep_skipped_consecutive"
 PERIODIC_ID_DIGEST_CHARS: Final = 16
+# Per-thread housekeeping failures that must not stop the rest: `aprune` raises
+# NotImplementedError for delta-channel threads, psycopg errors cover concurrent writes.
+_THREAD_ERRORS: Final = (NotImplementedError, psycopg.Error)
+# A cron firing is idempotent (uuid5 ids, insert ignores conflicts), so a short retry is safe.
+FIRE_CRON_MAX_ATTEMPTS: Final = 3
+FIRE_CRON_RETRY_WAIT_S: Final = 5
 
 
 def cron_periodic_id(flow: str, cron: CronSpec) -> str:
     """Stable id from the cron's content, never its list position (reordering must not re-fire)."""
     content = json.dumps([cron.schedule, cron.input], sort_keys=True, separators=(",", ":"))
     return f"{flow}:{hashlib.sha256(content.encode()).hexdigest()[:PERIODIC_ID_DIGEST_CHARS]}"
-
-
-def _lock_conn_options(url: str) -> str:
-    existing = conninfo_to_dict(url).get("options")
-    return f"{existing} {LOCK_CONN_OPTIONS}" if existing else LOCK_CONN_OPTIONS
 
 
 async def requeue_stalled(app: App) -> None:
@@ -139,13 +143,10 @@ async def redefer_orphans(
     if expired.exhausted:
         logger.warning("runs out of attempts: %s", expired.exhausted)
     stale = await runs.stale_pending(res.settings.runs.pending_redefer_s)
-    threads = await runs.thread_ids([*expired.redefer, *stale])
-    for run_id in expired.redefer:
-        if run_id in threads:
-            await queue.defer(run_id, threads[run_id], recovery=True)
-    for run_id in stale:  # oldest first
-        if run_id in threads:
-            await queue.defer(run_id, threads[run_id])
+    for run_id, thread_id in expired.redefer:
+        await queue.defer(run_id, thread_id, recovery=True)
+    for run_id, thread_id in stale:  # oldest first
+        await queue.defer(run_id, thread_id)
 
 
 async def run_sweep(
@@ -158,7 +159,7 @@ async def run_sweep(
     """
     url = res.settings.database.url.get_secret_value()
     conn = await AsyncConnection.connect(
-        url, options=_lock_conn_options(url), connect_timeout=LOCK_CONNECT_TIMEOUT_S
+        url, options=with_options(url, LOCK_CONN_OPTIONS), connect_timeout=LOCK_CONNECT_TIMEOUT_S
     )
     async with conn, conn.transaction():
         cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (SWEEP_LOCK_KEY,))
@@ -170,22 +171,44 @@ async def run_sweep(
     return True
 
 
+async def _delete_idle_thread(
+    res: RunnerResources, runs: RunsRepository, thread_id: uuid.UUID, delete_after: timedelta
+) -> None:
+    # The idle list can be minutes old (`keep_latest` of other threads runs in between): a thread
+    # reused since then must keep its history and its pending rows.
+    if not await runs.thread_is_idle(thread_id, delete_after):
+        logger.info("thread %s not deleted: active again", thread_id)
+        return
+    # Checkpoints first (1y): a failed row delete leaves the thread retryable next time.
+    # shortcut: a run created between the check above and the row delete loses its checkpoints
+    # (the conditional delete spares its row); closing it needs the per-thread lock (T26 note).
+    await res.checkpointer.adelete_thread(str(thread_id))
+    await runs.delete_idle_thread(thread_id, delete_after)
+
+
 async def prune_threads(res: RunnerResources, runs: RunsRepository) -> None:
-    """`keep_latest` past `threads.ttl_days` idle, whole-thread delete past `delete_after_days`."""
+    """`keep_latest` past `threads.ttl_days` idle, whole-thread delete past `delete_after_days`.
+
+    Per thread: one that fails (a delta-channel thread cannot be pruned, a write conflicts) logs
+    a warning and the rest go on. Deletions run first so retention never depends on `keep_latest`.
+    """
     cfg = res.settings.threads
-    doomed = await runs.idle_threads(timedelta(days=cfg.delete_after_days))
+    delete_after = timedelta(days=cfg.delete_after_days)
     # shortcut: re-prunes every thread in the keep_latest window on each run (idempotent);
     # track pruned threads if the window gets large enough to hurt.
-    stale = set(await runs.idle_threads(timedelta(days=cfg.ttl_days))) - set(doomed)
-    if stale:
-        await prune_checkpoints(res.checkpointer, sorted(stale))
+    idle = await runs.idle_threads(timedelta(days=cfg.ttl_days))
+    doomed = [t for t, age in idle if age > delete_after]
+    stale = [t for t, age in idle if age <= delete_after]
     for thread_id in doomed:
-        # Checkpoints first: a failed run-row delete leaves the thread retryable next time.
-        await res.checkpointer.adelete_thread(str(thread_id))
         try:
-            await runs.delete_thread(thread_id)
-        except RunError as exc:  # a run started since the thread went idle
-            logger.warning("thread %s not deleted: %s", thread_id, exc)
+            await _delete_idle_thread(res, runs, thread_id, delete_after)
+        except _THREAD_ERRORS:
+            logger.warning("thread %s not deleted", thread_id, exc_info=True)
+    for thread_id in stale:
+        try:
+            await prune_checkpoints(res.checkpointer, [thread_id])
+        except _THREAD_ERRORS:
+            logger.warning("thread %s not pruned", thread_id, exc_info=True)
 
 
 async def fire_cron(
@@ -246,7 +269,10 @@ def _register_housekeeping(
     async def prune_job(timestamp: int) -> None:
         await prune_threads(res, runs)
 
-    @app.task(name=FIRE_CRON)
+    @app.task(
+        name=FIRE_CRON,
+        retry=RetryStrategy(max_attempts=FIRE_CRON_MAX_ATTEMPTS, wait=FIRE_CRON_RETRY_WAIT_S),
+    )
     async def fire_cron_job(
         timestamp: int, flow: str, input: dict[str, object], periodic_id: str
     ) -> None:
@@ -270,12 +296,6 @@ def _register_housekeeping(
 
 async def run_worker(container: RunnerResources) -> None:
     """Serve jobs until cancelled, `limits.max_active_runs` at a time (heartbeat defaults)."""
-    db = container.settings.database
-    log_connection_budget(
-        db.app_pool_max,
-        db.checkpointer_pool_max,
-        db.procrastinate_pool_max + WORKER_EXTRA_CONNECTIONS,
-    )
     app = register_tasks(container)
     await app.run_worker_async(
         concurrency=container.settings.limits.max_active_runs,
