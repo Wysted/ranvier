@@ -40,6 +40,7 @@ from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
 from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import RunsRepository
+from graph_agent._internal.usage import UsageObserver, UsageRepository
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class Container:
     mcp: McpToolSource
     shutdown_budget: ShutdownBudget
     flows: FlowRegistry
-    observers: list[RunObserver] = field(default_factory=list)  # T32 appends
+    observers: list[RunObserver] = field(default_factory=list)
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)  # T26 drains these
     queue: RunQueue | None = None  # T24 sets it; None: inline-only process
 
@@ -179,6 +180,8 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             mcp=mcp,
             shutdown_budget=budget,
             flows=flows,
+            # Memory mode has no ledger: the runner still counts for the `end` event.
+            observers=[UsageObserver(UsageRepository(app_pool))] if app_pool is not None else [],
         )
 
 

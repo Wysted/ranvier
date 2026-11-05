@@ -49,7 +49,7 @@ from graph_agent._internal.runtime.runs import (
     RunsRepository,
     RunStatus,
 )
-from graph_agent._internal.usage import Counts, UsageCallback
+from graph_agent._internal.usage import Counts, UsageCallback, sum_counts
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class ActiveRuns:
         for control in list(self._controls):
             control.request_drain(DRAIN_REASON)
 
-    def __len__(self) -> int:
+    def __len__(self) -> int:  # T33 reads it as the active-runs gauge
         return len(self._controls)
 
 
@@ -513,6 +513,9 @@ async def _settle[T](
     """The attempt's terminal step (write + observers) in a shielded task.
 
     `settled` is set first: a cancel from here on must not make the abort notify a second time.
+
+    shortcut: this step is not bounded by the shutdown budget (only `_abort` is), so a hung
+    database write can outlast it; T26 bounds `ActiveRuns.settled()` and lease expiry recovers.
     """
     attempt.settled = True
     return await _shielded(container.active_runs, coro)
@@ -557,7 +560,12 @@ async def _finish(
     error: RunError | None = None,
 ) -> bool:
     """Fenced terminal write, then the observers. False: the lease was lost, nothing written."""
-    if not await runs.finish(uuid.UUID(ctx.run_id), token, status, error):
+    try:
+        written = await runs.finish(uuid.UUID(ctx.run_id), token, status, error)
+    except Exception:  # the ledger still records what the attempt spent, once
+        await _notify(container, ctx, RunStatus.RUNNING, usage)
+        raise
+    if not written:
         logger.warning("run %s: lease lost before the terminal write", ctx.run_id)
         await _notify(container, ctx, RunStatus.RUNNING, usage)
         return False
@@ -574,11 +582,11 @@ async def _notify(
 ) -> None:
     """Tell the observers how this attempt ended (`running`: it ended without a terminal write)."""
     by_key = usage.snapshot()  # one snapshot: the totals and the breakdown always agree
-    total = Counts()
-    for counts in by_key.values():
-        total.add(counts)
     outcome = RunOutcome(
-        status.value, _totals(total), None if error is None else _error_event(error), by_key
+        status.value,
+        _totals(sum_counts(by_key.values())),
+        None if error is None else _error_event(error),
+        by_key,
     )
     for observer in container.observers:
         try:
@@ -595,23 +603,24 @@ async def _hand_over(
     token: str,
     usage: UsageCallback,
 ) -> None:
-    """Drain the attempt, then tell the observers it ended without a terminal write."""
-    await _drain(runs, container.queue, run, token)
-    await _notify(container, ctx, RunStatus.RUNNING, usage)
+    """Graceful shutdown: expire the lease, give the attempt back and defer; no terminal event.
 
-
-async def _drain(runs: RunsRepository, queue: RunQueue | None, run: Run, token: str) -> None:
-    """Graceful shutdown: expire the lease, give the attempt back and defer; no terminal event."""
-    if not await runs.release_for_drain(run.run_id, token):
-        logger.warning("run %s: lease lost before the drain release", run.run_id)
-        return
-    if queue is None:
-        logger.warning("run %s drained but no queue to defer it; the orphan sweep will", run.run_id)
-        return
+    The observers are told the attempt ended without a terminal write (status `running`).
+    """
     try:
-        await queue.defer(run.run_id, run.thread_id)
-    except Exception:  # the lease is already expired: the orphan sweep re-defers it
-        logger.exception("run %s: could not defer after drain", run.run_id)
+        if not await runs.release_for_drain(run.run_id, token):
+            logger.warning("run %s: lease lost before the drain release", run.run_id)
+        elif container.queue is None:
+            logger.warning(
+                "run %s drained but no queue to defer it; the orphan sweep will", run.run_id
+            )
+        else:
+            try:
+                await container.queue.defer(run.run_id, run.thread_id)
+            except Exception:  # the lease is already expired: the orphan sweep re-defers it
+                logger.exception("run %s: could not defer after drain", run.run_id)
+    finally:
+        await _notify(container, ctx, RunStatus.RUNNING, usage)
 
 
 def _error_event(error: RunError) -> ErrorEvent:

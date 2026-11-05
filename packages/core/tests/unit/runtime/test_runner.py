@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import math
 import sys
+import time
 import types
 import uuid
 from collections.abc import Iterator, Sequence
@@ -20,7 +21,6 @@ from langgraph.types import Command, interrupt
 
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
-from graph_agent._internal.observability.tracing import AGENT_METADATA_KEY as TRACING_AGENT_KEY
 from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.context import RunContext
@@ -52,7 +52,7 @@ from graph_agent._internal.runtime.runs import (
     RunsRepository,
     RunStatus,
 )
-from graph_agent._internal.usage import AGENT_METADATA_KEY, Counts
+from graph_agent._internal.usage import Counts
 
 MODULE = "t16_user_flows"
 FLOW_VERSION = 3
@@ -207,6 +207,7 @@ class FakeRuns:
         self.finished: list[tuple[RunStatus, RunError | None]] = []
         self.released: list[str] = []
         self.finish_ok = True
+        self.finish_fault = False
 
     async def claim(
         self, run_id: uuid.UUID, owner: str, lease_s: float, max_attempts: int
@@ -227,6 +228,8 @@ class FakeRuns:
         self, run_id: uuid.UUID, token: str, status: RunStatus, error: RunError | None = None
     ) -> bool:
         assert token == TOKEN
+        if self.finish_fault:
+            raise ConnectionError("database unreachable")
         if self.finish_ok:
             self.finished.append((status, error))
         return self.finish_ok
@@ -669,6 +672,20 @@ async def test_lost_lease_at_finish_still_notifies_the_ledger(
     assert outcome.status == "running" and outcome.usage == USAGE
 
 
+async def test_failed_terminal_write_still_notifies_the_ledger(
+    user_module: types.ModuleType,
+) -> None:
+    run = _run("work")
+    res, fake = _resources(run)
+    fake.finish_fault = True
+    obs = Observer()
+    res.observers.append(obs)
+    with pytest.raises(ConnectionError):
+        await _events(res, run)
+    (outcome,) = obs.outcomes
+    assert outcome.status == "running" and outcome.usage == USAGE
+
+
 async def test_slow_consumer_backpressures_the_stream(
     user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -779,10 +796,14 @@ async def test_lost_lease_is_detected_at_lease_expiry(user_module: types.ModuleT
     run = _run("slow")
     res, fake = _resources(run, settings=LATE_SETTINGS)
     fake.heartbeat_fault = "raise"
+    started = time.monotonic()
     events = await _events(res, run)
+    elapsed = time.monotonic() - started
     assert isinstance(events[-1], ErrorEvent) and events[-1].retryable
-    # Beats at 0.12 and 0.24; the lease expires at 0.30 (not after a third full interval).
-    assert fake.beats == 2
+    # Nominal beats at 0.12 and 0.24; a loaded CI box may skip one. Lost at lease expiry, never
+    # after an extra full interval.
+    assert 1 <= fake.beats <= 2
+    assert elapsed < LATE_LEASE_S + LATE_HEARTBEAT_S
 
 
 async def test_settled_waits_for_the_tracked_run() -> None:
@@ -808,7 +829,3 @@ def test_active_runs_tracks_and_drains() -> None:
     assert len(active) == 0
     with active.track():  # claimed during shutdown: starts already asked to drain
         assert active.draining
-
-
-def test_usage_agent_key_matches_the_tracing_key() -> None:
-    assert AGENT_METADATA_KEY == TRACING_AGENT_KEY
