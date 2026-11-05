@@ -288,6 +288,15 @@ class RunsRepository:
         )
         return [Run.from_row(r) for r in rows]
 
+    async def has_running(self, thread_id: uuid.UUID) -> bool:
+        """True while a run is `running` (an expired lease still counts until recovery moves it)."""
+        rows = await self._fetch(
+            "SELECT EXISTS (SELECT 1 FROM graph_agent.runs "
+            "WHERE thread_id = %s AND status = 'running') AS running",
+            (thread_id,),
+        )
+        return bool(rows[0]["running"])
+
     async def thread_pin(self, thread_id: uuid.UUID) -> ThreadPin | None:
         """Flow, version and tenant of the thread's first run; None for an unknown thread."""
         rows = await self._fetch(

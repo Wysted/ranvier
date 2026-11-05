@@ -12,6 +12,7 @@ from typing import Any, TypedDict
 import httpx
 import pytest
 from fastapi import FastAPI
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import SecretStr
@@ -32,6 +33,7 @@ from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
 from graph_agent._internal.runtime.checkpointer import setup_checkpointer
 from graph_agent._internal.runtime.runner import execute_run
+from graph_agent._internal.runtime.runs import DEFAULT_LIST_LIMIT
 
 MODULE = "t23_integration_flows"
 WAIT_S = 5.0
@@ -78,7 +80,9 @@ class InlineQueue:
         self._container = container
         self.tasks: list[asyncio.Task[None]] = []
 
-    async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None:
+    async def defer(
+        self, run_id: uuid.UUID, thread_id: uuid.UUID, *, recovery: bool = False
+    ) -> None:
         async def drain() -> None:
             async for _ in execute_run(self._container, run_id):
                 pass
@@ -332,6 +336,23 @@ async def _statuses(container: Container) -> list[str]:
     return [status for (status,) in rows]
 
 
+async def test_delete_sees_a_running_run_beyond_the_list_window(
+    client: httpx.AsyncClient, container: Container
+) -> None:
+    thread = _sse(await _stream(client, {"flow": "echo", "input": {}}))[0][1]["thread_id"]
+    tid = uuid.UUID(thread)
+    runs = routes._runs(container)
+    running = await runs.create(thread_id=tid, flow="echo", flow_version=1, input={})
+    await runs.claim(running.run_id, "test", 60.0, 3)
+    for _ in range(DEFAULT_LIST_LIMIT):  # newer rows push the running one out of the list window
+        newer = await runs.create(thread_id=tid, flow="echo", flow_version=1, input={})
+        await runs.request_cancel(newer.run_id, tid)
+
+    assert (await client.delete(f"/threads/{thread}")).status_code == HTTPStatus.CONFLICT
+    config: RunnableConfig = {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
+    assert await container.checkpointer.aget_tuple(config) is not None
+
+
 async def test_failed_checkpoint_delete_keeps_the_thread_deletable(
     client: httpx.AsyncClient, soft_client: httpx.AsyncClient, container: Container
 ) -> None:
@@ -370,7 +391,9 @@ async def test_failed_defer_cancels_the_row_and_answers_503(
     client: httpx.AsyncClient, container: Container
 ) -> None:
     class BrokenQueue:
-        async def defer(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> None:
+        async def defer(
+            self, run_id: uuid.UUID, thread_id: uuid.UUID, *, recovery: bool = False
+        ) -> None:
             raise ConnectionError("db down")
 
     container.queue = BrokenQueue()
@@ -463,6 +486,7 @@ async def test_a_tenant_cannot_reach_another_tenants_thread(
         ("GET", f"{base}/runs", None),
         ("GET", f"{base}/runs/{run}", None),
         ("POST", f"{base}/runs/{run}/cancel", None),
+        ("POST", f"{base}/runs", {"flow": "echo", "input": {}}),
         ("POST", f"{base}/runs/stream", {"flow": "echo", "input": {}}),
         ("DELETE", base, None),
     ]

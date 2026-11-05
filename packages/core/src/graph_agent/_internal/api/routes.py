@@ -40,7 +40,6 @@ from graph_agent._internal.runtime.runs import (
     Run,
     RunError,
     RunsRepository,
-    RunStatus,
     ThreadPin,
 )
 
@@ -370,11 +369,16 @@ async def thread_state(thread_id: uuid.UUID, c: Ctr, who: Caller) -> ThreadState
 
 @router.delete("/threads/{thread_id}", status_code=HTTPStatus.NO_CONTENT)
 async def delete_thread(thread_id: uuid.UUID, c: Ctr, who: Caller) -> None:
+    """Delete the thread's checkpoints and runs; refused (409) while a run is running.
+
+    Queued (pending) runs are discarded with the rows; their Procrastinate jobs exit at the
+    claim (LOST) without a trace.
+    """
     await _pin(c, who, thread_id)
     runs = _runs(c)
     # Checkpoints go before the rows: the rows are what makes a retry find the thread (and keeps
     # the section 5 rules for a reused thread_id) if the checkpoint delete fails.
-    if any(r.status is RunStatus.RUNNING for r in await runs.list_for_thread(thread_id)):
+    if await runs.has_running(thread_id):
         raise RunError(ErrorCode.THREAD_BUSY, "thread has a running run", retryable=True)
     await c.checkpointer.adelete_thread(str(thread_id))
     # shortcut: a run that starts between the check and here loses its checkpoints (the delete

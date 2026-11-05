@@ -313,7 +313,7 @@ Inline streamed runs execute in the API process; background runs and crons go th
 | `GET /threads/{thread_id}/runs/{run_id}` | One run | 200 |
 | `POST /threads/{thread_id}/runs/{run_id}/cancel` | Request cancellation | 202 |
 | `GET /threads/{thread_id}/state` | `values`, `next`, `interrupts`, `checkpoint_id` | 200 |
-| `DELETE /threads/{thread_id}` | Delete checkpoints and runs (refused while running) | 204 |
+| `DELETE /threads/{thread_id}` | Delete checkpoints and runs (refused while running); queued (pending) runs are discarded and their Procrastinate jobs exit at the claim (LOST) silently | 204 |
 
 Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`.
 
