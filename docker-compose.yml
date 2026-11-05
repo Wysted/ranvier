@@ -11,8 +11,8 @@ services:
       POSTGRES_PASSWORD: graph_agent
       POSTGRES_DB: graph_agent
     ports:
-      # Non-default host port so it does not clash with a local Postgres on 5432.
-      - "127.0.0.1:54329:5432"
+      # Non-default host port below 49152: no clash with a local 5432 nor with the port ranges Windows/Hyper-V reserves dynamically (WSL).
+      - "127.0.0.1:25432:5432"
     volumes:
       # Postgres 18 images keep PGDATA in a versioned subdirectory of this path.
       - pgdata:/var/lib/postgresql

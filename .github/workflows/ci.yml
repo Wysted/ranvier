@@ -41,7 +41,7 @@ jobs:
       # (see packages/core/tests/integration/conftest.py).
       GRAPH_AGENT_REQUIRE_SERVICES: "1"
     services:
-      # Same image and credentials as docker-compose.yml; host port 54329 is the fixtures' default.
+      # Same image and credentials as docker-compose.yml; host port 25432 is the fixtures' default.
       db:
         image: pgvector/pgvector:pg18
         env:
@@ -49,7 +49,7 @@ jobs:
           POSTGRES_PASSWORD: graph_agent
           POSTGRES_DB: graph_agent
         ports:
-          - 54329:5432
+          - 25432:5432
         options: >-
           --health-cmd "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"
           --health-interval 5s

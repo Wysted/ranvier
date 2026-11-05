@@ -36,7 +36,7 @@ AUTH_PATTERN = rf"^({AUTH_NONE}|{AUTH_API_KEYS}|[A-Za-z_][\w.]*:[A-Za-z_]\w*)$"
 MAX_PORT = 65535
 
 # Defaults from design sections 5 and 8.
-DEFAULT_DATABASE_URL = "postgresql://graph_agent:graph_agent@127.0.0.1:54329/graph_agent"  # compose
+DEFAULT_DATABASE_URL = "postgresql://graph_agent:graph_agent@127.0.0.1:25432/graph_agent"  # compose
 DEFAULT_APP_POOL_MAX = 5
 DEFAULT_CHECKPOINTER_POOL_MAX = 10
 DEFAULT_PROCRASTINATE_POOL_MAX = 5
