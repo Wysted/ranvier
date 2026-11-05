@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 import httpx2  # noqa: TID251
 from langchain_core.messages.content import (
+    create_audio_block,
     create_file_block,
     create_image_block,
     create_text_block,
@@ -24,24 +25,29 @@ from langchain_core.tools import BaseTool, StructuredTool, ToolException
 from mcp import Client, MCPError  # noqa: TID251
 from mcp.client import InputRequiredRoundsExceededError  # noqa: TID251
 from mcp.client.streamable_http import streamable_http_client  # noqa: TID251
-from mcp_types import (
+from mcp_types import (  # noqa: TID251
     INVALID_REQUEST,
+    AudioContent,
     CallToolResult,
     EmbeddedResource,
     ImageContent,
+    ResourceLink,
     TextContent,
     TextResourceContents,
 )
-from mcp_types.version import MODERN_PROTOCOL_VERSIONS
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS  # noqa: TID251
+from pydantic import ValidationError
 
 from graph_agent._internal.config.manifest import McpServerSpec
 
 _log = logging.getLogger(__name__)
 
-# mcp imports jsonschema lazily on the first call_tool (sync I/O inside the loop): load it now.
+# shortcut: eager import because mcp imports jsonschema lazily on the first call_tool (sync I/O
+# inside the loop); remove when mcp imports it at load time.
 importlib.import_module("jsonschema")
 
 SSE_READ_TIMEOUT_S = 300.0  # same as the SDK's own client: idle server-to-client streams
+REAP_TIMEOUT_S = 5.0  # grace for an owner task to exit before it is cancelled
 DEFAULT_MIME = "application/octet-stream"
 
 
@@ -81,10 +87,13 @@ class _Server:
         self,
         name: str,
         spec: McpServerSpec,
+        headers: dict[str, str],
         transport: httpx2.AsyncBaseTransport | None,
     ) -> None:
         self.name = name
         self._spec = spec
+        self._headers = headers
+        self._closed = False
         self._inner_transport = transport
         self._http: httpx2.AsyncClient | None = None
         self._client: Client | None = None
@@ -98,20 +107,12 @@ class _Server:
 
     async def _http_client(self) -> httpx2.AsyncClient:
         if self._http is None:
-            headers = {}
-            for header, env_name in self._spec.headers_env.items():
-                value = os.environ.get(env_name)
-                if value is None:
-                    raise McpSourceError(
-                        f"MCP server {self.name!r}: env var {env_name} (header {header}) is not set"
-                    )
-                headers[header] = value
             # Lazy imports inside httpx2 read package metadata (sync I/O): keep them off the loop.
             inner = self._inner_transport
             if inner is None:
                 inner = await asyncio.to_thread(httpx2.AsyncHTTPTransport)
             self._http = httpx2.AsyncClient(
-                headers=headers,
+                headers=self._headers,
                 timeout=httpx2.Timeout(
                     self._spec.timeout_s, read=max(self._spec.timeout_s, SSE_READ_TIMEOUT_S)
                 ),
@@ -156,12 +157,17 @@ class _Server:
         if task is None:
             return
         self._stop.set()
-        await asyncio.wait({task})
-        if not task.cancelled() and (exc := task.exception()) is not None:
-            _log.warning("MCP owner for %r died: %s", self.name, type(exc).__name__)
+        _, pending = await asyncio.wait({task}, timeout=REAP_TIMEOUT_S)
+        if pending:  # stuck in teardown: never let it hang shutdown
+            task.cancel()
+            await asyncio.wait({task}, timeout=REAP_TIMEOUT_S)
+        if task.done() and not task.cancelled() and (exc := task.exception()) is not None:
+            _log.warning("MCP owner for %r died: %s", self.name, _describe(exc))
 
     async def _live_client(self) -> Client:
         async with self._lock:
+            if self._closed:
+                raise McpSourceError(f"MCP server {self.name!r} is closed")
             if not self._alive():
                 await self._reap()
                 await self._start()
@@ -175,6 +181,7 @@ class _Server:
 
     async def close(self) -> None:
         async with self._lock:
+            self._closed = True
             await self._reap()
             if self._http is not None:
                 await self._http.aclose()
@@ -197,7 +204,8 @@ class _Server:
     async def list_tools(self) -> list[BaseTool]:
         """Paginated listing, cached after the first success."""
         if self.tools is None:
-            self.tools = await self.run(self._list_all)
+            async with asyncio.timeout(self._spec.timeout_s):  # includes connect and handshake
+                self.tools = await self.run(self._list_all)
         return self.tools
 
     async def _list_all(self, client: Client) -> list[BaseTool]:
@@ -226,6 +234,8 @@ class _Server:
                 InputRequiredRoundsExceededError,
                 ExceptionGroup,
                 httpx2.HTTPError,
+                RuntimeError,  # SDK: structuredContent violates the tool's outputSchema
+                ValidationError,
             ) as exc:
                 raise ToolException(
                     f"MCP tool {name!r} on {self.name!r} failed: {_describe(exc)}"
@@ -253,28 +263,48 @@ def _describe(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _meta(kind: str, **fields: Any) -> dict[str, Any]:
+    return {"type": kind, **{k: v for k, v in fields.items() if v is not None}}
+
+
 def _map_result(tool: str, result: CallToolResult) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Design §7 'MCP results': text -> content; image/resource -> content block + artifact."""
+    """Design §7 'MCP results': media go to content blocks; the artifact keeps metadata only."""
     blocks: list[dict[str, Any]] = []
     resources: list[dict[str, Any]] = []
     for block in result.content:
-        if isinstance(block, TextContent):
-            blocks.append(dict(create_text_block(block.text)))
-        elif isinstance(block, ImageContent):
-            blocks.append(dict(create_image_block(base64=block.data, mime_type=block.mime_type)))
-        elif isinstance(block, EmbeddedResource):
-            res = block.resource
-            resources.append(res.model_dump(mode="json", by_alias=True))
-            if isinstance(res, TextResourceContents):
-                blocks.append(dict(create_text_block(res.text)))
-            else:
-                mime = res.mime_type or DEFAULT_MIME
-                make = create_image_block if mime.startswith("image/") else create_file_block
-                blocks.append(dict(make(base64=res.blob, mime_type=mime)))
-        else:
-            raise ToolException(
-                f"MCP tool {tool!r} returned unsupported content block {block.type!r}"
-            )
+        match block:
+            case TextContent():
+                blocks.append(dict(create_text_block(block.text)))
+            case ImageContent():
+                blocks.append(
+                    dict(create_image_block(base64=block.data, mime_type=block.mime_type))
+                )
+                resources.append(_meta("image", mime_type=block.mime_type))
+            case AudioContent():
+                blocks.append(
+                    dict(create_audio_block(base64=block.data, mime_type=block.mime_type))
+                )
+                resources.append(_meta("audio", mime_type=block.mime_type))
+            case ResourceLink():
+                blocks.append(dict(create_text_block(f"{block.name}: {block.uri}")))
+                resources.append(
+                    _meta(
+                        "resource_link",
+                        uri=block.uri,
+                        name=block.name,
+                        mime_type=block.mime_type,
+                        size=block.size,
+                    )
+                )
+            case EmbeddedResource():
+                res = block.resource
+                if isinstance(res, TextResourceContents):
+                    blocks.append(dict(create_text_block(res.text)))
+                else:
+                    mime = res.mime_type or DEFAULT_MIME
+                    make = create_image_block if mime.startswith("image/") else create_file_block
+                    blocks.append(dict(make(base64=res.blob, mime_type=mime)))
+                resources.append(_meta("resource", uri=res.uri, mime_type=res.mime_type))
     if result.is_error:
         text = " ".join(b["text"] for b in blocks if b["type"] == "text")
         raise ToolException(text or f"MCP tool {tool!r} reported an error")
@@ -284,25 +314,35 @@ def _map_result(tool: str, result: CallToolResult) -> tuple[list[dict[str, Any]]
 class _Source:
     def __init__(self, servers: dict[str, _Server]) -> None:
         self._servers = servers
-        self._owners: dict[str, str] = {}  # tool name -> server
 
     async def tools(self, server: str) -> Sequence[BaseTool]:
         try:
             srv = self._servers[server]
         except KeyError:
             raise McpSourceError(f"unknown MCP server {server!r}") from None
-        listed = await srv.list_tools()
-        for tool in listed:
-            owner = self._owners.setdefault(tool.name, server)
-            if owner != server:
-                raise McpSourceError(
-                    f"MCP tool name {tool.name!r} is exposed by both {owner!r} and {server!r}"
-                )
-        return listed
+        # Cross-server name collisions are checked per agent by T30, not here (order-dependent).
+        try:
+            return await srv.list_tools()
+        except (MCPError, ExceptionGroup, httpx2.HTTPError, TimeoutError) as exc:
+            # No mcp/httpx2 type crosses the port.
+            raise McpSourceError(f"MCP server {server!r} unavailable: {_describe(exc)}") from None
 
     async def close(self) -> None:
         for srv in self._servers.values():
             await srv.close()
+
+
+def _resolve_headers(name: str, spec: McpServerSpec) -> dict[str, str]:
+    """Header values from the environment; never echoes a value, only the variable name."""
+    headers: dict[str, str] = {}
+    for header, env_name in spec.headers_env.items():
+        value = os.environ.get(env_name)
+        if value is None or not value.strip():
+            raise McpSourceError(
+                f"MCP server {name!r}: env var {env_name} (header {header}) is missing or empty"
+            )
+        headers[header] = value
+    return headers
 
 
 async def open_mcp_sources(
@@ -311,10 +351,15 @@ async def open_mcp_sources(
     *,
     transport: httpx2.AsyncBaseTransport | None = None,
 ) -> McpToolSource:
-    """Build the source; connections open lazily on first use, and `stack` closes them.
+    """Build the source; headers are resolved now, connections open lazily on first use.
 
-    `transport` is a test seam (in-process ASGI instead of the network).
+    `stack` closes them. `transport` is a test seam (in-process ASGI instead of the network).
     """
-    source = _Source({name: _Server(name, spec, transport) for name, spec in servers.items()})
+    source = _Source(
+        {
+            name: _Server(name, spec, _resolve_headers(name, spec), transport)
+            for name, spec in servers.items()
+        }
+    )
     stack.push_async_callback(source.close)
     return source
