@@ -44,3 +44,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Keep handlers thin: parse, open container, call runtime, print. `asyncio.run` once per command.
 - To run a toy flow in tests build a tmp manifest, same technique as T17's tests.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From T11 (orchestrator decision): run `setup_checkpointer` (and later the Procrastinate schema step) under the SAME advisory lock as the own SQL migrations, so concurrent `migrate` invocations cannot interleave the saver's migrations.
