@@ -28,7 +28,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T20 | `examples/`: hello and approval (interrupt) flows with tests | 6 | T19 | sa-dev-py | [T20](tasks/T20-examples-basic.md) | done |
 | T21 | `api/dto.py`: wire DTOs and SSE mapping (`{run_id}:{seq}` ids) | 7 | T12, T13 | sa-dev-py | [T21](tasks/T21-api-dto.md) | done |
 | T22 | `api/auth.py`: `Principal`, none (localhost) / static API keys / `module:callable` hook | 7 | T04 | sa-dev-py | [T22](tasks/T22-api-auth.md) | done |
-| T23 | `api/app.py` + `api/routes.py`: endpoints, admission (`429`), `serve` | 7 | T16, T21, T22 | sa-dev-py | [T23](tasks/T23-api-app-routes.md) | todo |
+| T23 | `api/app.py` + `api/routes.py`: endpoints, admission (`429`), `serve` | 7 | T16, T21, T22 | sa-dev-py | [T23](tasks/T23-api-app-routes.md) | done |
 | T24 | `queue.py` + `worker.py`: Procrastinate app, execute job with `lock=thread_id` | 8 | T16, S4 | sa-dev-py | [T24](tasks/T24-queue-worker.md) | done |
 | T25 | Worker housekeeping: stalled jobs, orphan sweep, checkpoint prune, crons; `worker` and `crons` CLI | 8 | T24 | sa-dev-py | [T25](tasks/T25-worker-housekeeping.md) | todo |
 | T26 | Graceful shutdown: SIGTERM -> stop admission, `RunControl.request_drain()`, requeue; shutdown timeouts | 8 | T23, T24, S1 | sa-dev-py | [T26](tasks/T26-graceful-shutdown.md) | todo |

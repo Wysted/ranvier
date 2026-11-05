@@ -8,7 +8,7 @@ unblocks: [T26, T34, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T23-api-app-routes
-status: todo
+status: done
 ---
 
 ## Goal
