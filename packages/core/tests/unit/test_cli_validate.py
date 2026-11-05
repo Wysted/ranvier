@@ -49,6 +49,22 @@ async def uses_unknown_refs(ctx):
     return _builder()
 
 
+async def builds_agent(ctx):
+    from graph_agent._internal.agents.spec import AgentSpec
+
+    spec = AgentSpec(name="a", profile="main", tools=("echo",), mcp_servers=("docs",))
+    agent = await ctx.agent(spec)
+    assert hasattr(agent, "ainvoke")
+    return _builder()
+
+
+async def duplicate_tool(ctx):
+    from graph_agent._internal.agents.spec import AgentSpec
+
+    await ctx.agent(AgentSpec(name="a", profile="main", tools=("echo", echo)))
+    return _builder()
+
+
 async def uses_tools(ctx):
     names = [t.name for t in ctx.tools("echo", "sync_only", "broken")]
     assert names == ["echo"], names
@@ -261,3 +277,25 @@ def test_flows_module_does_not_import_validation_deps() -> None:
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == ""
+
+
+def test_agents_are_built_for_real_without_connecting_to_mcp(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest(
+        PROFILE
+        + """
+[mcp.servers.docs]
+url = "https://example.invalid/mcp"
+[tools.echo]
+target = "MOD:echo"
+[flows.ok]
+target = "MOD:builds_agent"
+[flows.dup]
+target = "MOD:duplicate_tool"
+"""
+    )
+    assert main(["validate", "--offline"]) == 1
+    err = capsys.readouterr().err
+    assert "flows.dup.target: agent 'a': duplicate tool name 'echo'" in err  # the real factory
+    assert "flows.ok" not in err
