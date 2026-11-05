@@ -5,7 +5,7 @@ import sys
 import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -21,13 +21,14 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
+from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.queue import ProcrastinateRunQueue, make_app
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
 from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
-from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
-from graph_agent._internal.worker import THREAD_BUSY_WAIT_S, run_worker
+from graph_agent._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
+from graph_agent._internal.worker import run_worker
 
 MODULE = "t24_integration_flows"
 FLOW_VERSION = 1
@@ -73,6 +74,9 @@ class Resources:
     observers: list[RunObserver] = field(default_factory=list)
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
     shutdown_budget: Budget = field(default_factory=Budget)
+    observability: Observability = field(
+        default_factory=lambda: Observability(metrics=LoggingMetrics())
+    )
 
 
 @pytest.fixture
@@ -115,13 +119,15 @@ async def res(
         yield Resources(settings, RunsRepository(pool), flows, saver, ProcrastinateRunQueue(app))
 
 
-@pytest.fixture
-async def worker(res: Resources) -> AsyncIterator[None]:
+@asynccontextmanager
+async def _running_worker(res: Resources) -> AsyncIterator[None]:
     task = asyncio.create_task(run_worker(res))
-    yield
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def _new(res: Resources, thread: uuid.UUID | None = None) -> tuple[uuid.UUID, uuid.UUID]:
@@ -165,12 +171,11 @@ async def _until_jobs_done(pool: AsyncConnectionPool, count: int) -> list[tuple[
     return jobs
 
 
-async def test_normal_run_reaches_success(
-    res: Resources, pool: AsyncConnectionPool, worker: None
-) -> None:
+async def test_normal_run_reaches_success(res: Resources, pool: AsyncConnectionPool) -> None:
     run_id, thread = await _new(res)
     await _defer(res, run_id, thread)
-    await _until(pool, run_id, RunStatus.SUCCESS)
+    async with _running_worker(res):
+        await _until(pool, run_id, RunStatus.SUCCESS)
 
 
 async def test_run_cancelled_before_claim_is_a_noop(
@@ -180,13 +185,8 @@ async def test_run_cancelled_before_claim_is_a_noop(
     run_id, thread = await _new(res)
     assert await res.runs.request_cancel(run_id, thread) is RunStatus.CANCELLED
     await _defer(res, run_id, thread)
-    task = asyncio.create_task(run_worker(res))
-    try:
+    async with _running_worker(res):
         await _until_jobs_done(pool, 1)
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
     assert await _status(pool, run_id) == RunStatus.CANCELLED
     assert timeline == []  # the flow never ran
 
@@ -200,13 +200,60 @@ async def test_same_thread_jobs_run_one_after_the_other(
     await _defer(res, second, thread)
     await _defer(res, second, thread)  # queueing_lock: ignored while the job is `todo`
     assert len(await _jobs(pool)) == 2
-    task = asyncio.create_task(run_worker(res))
-    try:
+    async with _running_worker(res):
         jobs = await _until_jobs_done(pool, 2)
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
     assert timeline == ["start", "end", "start", "end"]
     assert [attempts for _, attempts in jobs] == [1, 1]  # finish counts one: no thread_busy retries
-    assert NODE_S < THREAD_BUSY_WAIT_S
+
+
+async def _until_retrying(pool: AsyncConnectionPool, job_index: int) -> None:
+    """Wait until the job is back to `todo` after at least one thread_busy retry."""
+    async with asyncio.timeout(WAIT_S):
+        while True:
+            status, attempts = (await _jobs(pool))[job_index]
+            if status == "todo" and attempts >= 1:
+                return
+            await asyncio.sleep(POLL_S)
+
+
+async def test_thread_busy_job_retries_until_the_thread_is_free(
+    res: Resources, pool: AsyncConnectionPool
+) -> None:
+    assert res.runs is not None
+    blocker, thread = await _new(res)
+    claim = await res.runs.claim(blocker, "test", res.settings.runs.lease_s, 3)
+    assert claim.outcome is ClaimOutcome.CLAIMED and claim.token is not None
+    run_id, _ = await _new(res, thread)
+    await _defer(res, run_id, thread)
+    async with _running_worker(res):
+        await _until_retrying(pool, 0)
+        assert await _status(pool, run_id) == RunStatus.PENDING
+        assert await res.runs.finish(blocker, claim.token, RunStatus.SUCCESS)
+        await _until(pool, run_id, RunStatus.SUCCESS)
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+async def test_recovery_defer_is_not_blocked_by_a_retrying_thread_busy_job(
+    res: Resources, pool: AsyncConnectionPool, recovery: bool
+) -> None:
+    """R1 handed over (running, lease released); R2's job retries thread_busy ahead of R1's defer.
+
+    Without priority, R2's `todo` job (even waiting for its retry) blocks R1's job until it
+    exhausts its attempts (~minute): R1 would miss WAIT_S.
+    """
+    assert res.runs is not None
+    r1, thread = await _new(res)
+    r2, _ = await _new(res, thread)
+    claim = await res.runs.claim(r1, "test", res.settings.runs.lease_s, 3)
+    assert claim.token is not None
+    assert await res.runs.release_for_drain(r1, claim.token)
+    await _defer(res, r2, thread)  # J2: lower id than the hand-over defer
+    async with _running_worker(res):
+        await _until_retrying(pool, 0)
+        assert res.queue is not None
+        await res.queue.defer(r1, thread, recovery=recovery)
+        if recovery:
+            await _until(pool, r1, RunStatus.SUCCESS)
+        else:
+            with pytest.raises(TimeoutError):  # documents the blocking this priority avoids
+                await _until(pool, r1, RunStatus.SUCCESS)

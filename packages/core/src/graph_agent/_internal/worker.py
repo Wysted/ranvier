@@ -18,7 +18,11 @@ from graph_agent._internal.runtime.runs import ErrorCode, RunError
 logger = logging.getLogger(__name__)
 
 # `max_attempts=N` means N+1 executions and stalled requeues spend the same counter (S4). A job
-# waiting for its retry blocks later jobs of the same thread, so the wait stays short.
+# waiting for its retry blocks later jobs of the same thread, so the wait stays short. On
+# exhaustion the job is failed and the run stays `pending`: T25's pending re-defer picks it up.
+# `retry_exceptions` must stay narrow: retrying CancelledError would re-defer the job the
+# hand-over already deferred and collide on the queueing_lock. Each ThreadBusy retry logs one INFO
+# traceback from Procrastinate; accepted, no filter.
 THREAD_BUSY_WAIT_S: Final = 2
 THREAD_BUSY_MAX_ATTEMPTS: Final = 30
 # Finishing a job sends no notification, so the next job of the same lock is found by polling.
@@ -63,6 +67,5 @@ async def run_worker(container: RunnerResources) -> None:
     app = register_tasks(container)
     await app.run_worker_async(
         concurrency=container.settings.limits.max_active_runs,
-        wait=True,
         fetch_job_polling_interval=FETCH_POLL_INTERVAL_S,
     )
