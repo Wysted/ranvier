@@ -53,3 +53,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Sync/blocking work must not run on the loop (blockbuster is on in tests).
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
 - From the T13 review (orchestrator decision, design §5): use the lease token returned by `claim` for heartbeat/finish; a claim may return the run as `cancelled` when `cancel_requested` was set.
+- From the T21 review (orchestrator): always request the `updates` stream mode from `astream` (interrupts are detected via `updates.__interrupt__`) and filter to the client's requested modes afterwards; when merging request `metadata` into `config["metadata"]`, platform keys (`run_id`, `thread_id`) always win so a client cannot spoof the S1 recovery check.
