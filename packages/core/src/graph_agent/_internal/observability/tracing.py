@@ -65,10 +65,10 @@ class LoggingMetrics:
     """Default sink when OTel is off: one log line per sample."""
 
     def gauge(self, name: str, value: float, attributes: Attributes | None = None) -> None:
-        logger.info("gauge %s=%s %s", name, value, dict(attributes or {}))
+        logger.debug("gauge %s=%s %s", name, value, dict(attributes or {}))
 
     def counter(self, name: str, value: float = 1, attributes: Attributes | None = None) -> None:
-        logger.info("counter %s+=%s %s", name, value, dict(attributes or {}))
+        logger.debug("counter %s+=%s %s", name, value, dict(attributes or {}))
 
 
 class OtelBackend(Protocol):
@@ -88,10 +88,6 @@ class Observability:
 
     metrics: Metrics
     backend: OtelBackend | None = None
-
-    @property
-    def enabled(self) -> bool:
-        return self.backend is not None
 
     def run_span(self, *, flow: str, run_id: str, thread_id: str) -> AbstractContextManager[object]:
         """Span around one run; a no-op when tracing is disabled."""

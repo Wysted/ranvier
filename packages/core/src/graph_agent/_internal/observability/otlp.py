@@ -6,8 +6,11 @@ process singleton, so a second backend without a `shutdown()` in between is refu
 """
 
 import logging
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import contextmanager
+from urllib.parse import urlsplit
 
+from openinference.instrumentation import using_attributes
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
@@ -18,7 +21,7 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-from graph_agent._internal.observability.tracing import Attributes, TracingError
+from graph_agent._internal.observability.tracing import ATTR_THREAD_ID, Attributes, TracingError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,20 @@ PROJECT_NAME = "openinference.project.name"  # the project Phoenix files traces 
 RUN_SPAN_NAME = "graph_agent.run"
 _TRACES_PATH = "/v1/traces"
 _METRICS_PATH = "/v1/metrics"
+SESSION_ID = "session.id"  # OpenInference attribute Phoenix groups sessions by
+
+
+def endpoint_for_log(endpoint: str) -> str:
+    """`scheme://host:port` only: userinfo, path and query can carry credentials."""
+    parts = urlsplit(endpoint)
+    host = parts.hostname or ""
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
 class OtelMetrics:
@@ -60,6 +77,11 @@ class OtlpBackend:
                 "observability handle down first"
             )
         base = endpoint.rstrip("/") if endpoint else None
+        if base and urlsplit(base).path.endswith((_TRACES_PATH, _METRICS_PATH)):
+            raise TracingError(
+                f"observability.otel_endpoint ({endpoint_for_log(base)}) must be a base URL: "
+                f"drop the {_TRACES_PATH} / {_METRICS_PATH} suffix"
+            )
         resource = Resource.create({SERVICE_NAME: SERVICE, PROJECT_NAME: SERVICE})
         self._tracer_provider = TracerProvider(resource=resource)
         self._tracer_provider.add_span_processor(
@@ -83,10 +105,22 @@ class OtlpBackend:
         self._tracer = self._tracer_provider.get_tracer(SERVICE)
         self.metrics = OtelMetrics(self._meter_provider.get_meter(SERVICE))
         self._closed = False
-        logger.info("OpenTelemetry on: OTLP/HTTP to %s", base or "SDK default endpoint")
+        logger.info(
+            "OpenTelemetry on: OTLP/HTTP to %s",
+            endpoint_for_log(base) if base else "SDK default endpoint",
+        )
 
-    def run_span(self, attributes: Attributes) -> AbstractContextManager[object]:
-        return self._tracer.start_as_current_span(RUN_SPAN_NAME, attributes=dict(attributes))
+    @contextmanager
+    def run_span(self, attributes: Attributes) -> Iterator[object]:
+        session = attributes.get(ATTR_THREAD_ID, "")
+        # using_attributes tags the LangChain child spans; the run span itself is set directly.
+        with (
+            using_attributes(session_id=session),
+            self._tracer.start_as_current_span(
+                RUN_SPAN_NAME, attributes={**attributes, SESSION_ID: session}
+            ) as span,
+        ):
+            yield span
 
     def _release(self) -> None:
         self._tracer_provider.shutdown()

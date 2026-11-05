@@ -1,6 +1,7 @@
 import logging
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -8,10 +9,15 @@ from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.observability import tracing
 from graph_agent._internal.observability.tracing import (
     LoggingMetrics,
+    Observability,
     TracingError,
     guard_foreign_tracing,
     setup_observability,
 )
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 _OTLP = "graph_agent._internal.observability.otlp"
 
@@ -63,8 +69,8 @@ def test_disabled_never_imports_otel() -> None:
 def test_disabled_metrics_log(caplog: pytest.LogCaptureFixture) -> None:
     obs = setup_observability(_settings())
     assert isinstance(obs.metrics, LoggingMetrics)
-    assert not obs.enabled
-    with caplog.at_level(logging.INFO, logger=tracing.__name__):
+    assert obs.backend is None
+    with caplog.at_level(logging.DEBUG, logger=tracing.__name__):
         obs.metrics.gauge("active_runs", 3, {"flow": "f"})
         obs.metrics.counter("runs", 1)
     assert "active_runs=3" in caplog.text
@@ -79,14 +85,71 @@ def test_missing_extra_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
         setup_observability(_settings(otel_enabled=True))
 
 
-def test_enabled_exports_run_span() -> None:
+def _enabled(
+    monkeypatch: pytest.MonkeyPatch, **observability: object
+) -> tuple[Observability, "InMemorySpanExporter", "InMemoryMetricReader"]:
     pytest.importorskip("opentelemetry.sdk")
-    obs = setup_observability(_settings(otel_enabled=True, otel_endpoint="http://127.0.0.1:1"))
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from graph_agent._internal.observability import otlp
+
+    spans = InMemorySpanExporter()
+    reader = InMemoryMetricReader()
+    monkeypatch.setattr(otlp, "OTLPSpanExporter", lambda **_: spans)
+    monkeypatch.setattr(otlp, "BatchSpanProcessor", SimpleSpanProcessor)
+    monkeypatch.setattr(otlp, "OTLPMetricExporter", lambda **_: None)
+    monkeypatch.setattr(otlp, "PeriodicExportingMetricReader", lambda _e: reader)
+    return setup_observability(_settings(otel_enabled=True, **observability)), spans, reader
+
+
+def test_enabled_run_span_children_and_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    from langchain_core.runnables import RunnableLambda
+    from opentelemetry import trace
+
+    obs, spans, reader = _enabled(monkeypatch)
     try:
-        assert obs.enabled
         with obs.run_span(flow="f", run_id="r", thread_id="t"):
-            pass
+            RunnableLambda(lambda x: x).invoke(1)
         obs.metrics.counter("runs")
+        finished = spans.get_finished_spans()
+        run = next(s for s in finished if s.name == "graph_agent.run")
+        assert dict(run.attributes or {}) == {
+            "graph_agent.flow": "f",
+            "graph_agent.run_id": "r",
+            "graph_agent.thread_id": "t",
+            "session.id": "t",
+        }
+        child = next(s for s in finished if s is not run)
+        assert child.parent is not None and child.parent.span_id == run.context.span_id
+        assert (child.attributes or {}).get("session.id") == "t"
+        assert isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+        data = reader.get_metrics_data()
+        assert data is not None
+        names = [
+            m.name for rm in data.resource_metrics for sm in rm.scope_metrics for m in sm.metrics
+        ]
+        assert names == ["runs"]
     finally:
         obs.shutdown()
         obs.shutdown()  # idempotent
+    obs2, _, _ = _enabled(monkeypatch)  # setup again after shutdown
+    obs2.shutdown()
+
+
+@pytest.mark.parametrize("suffix", ["/v1/traces", "/v1/metrics/"])
+def test_endpoint_with_signal_path_rejected(monkeypatch: pytest.MonkeyPatch, suffix: str) -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    with pytest.raises(TracingError, match="base URL") as err:
+        setup_observability(
+            _settings(otel_enabled=True, otel_endpoint=f"http://user:secret@h:4318{suffix}")
+        )
+    assert "secret" not in str(err.value)
+
+
+def test_endpoint_for_log_strips_credentials() -> None:
+    pytest.importorskip("opentelemetry.sdk")
+    from graph_agent._internal.observability.otlp import endpoint_for_log
+
+    assert endpoint_for_log("https://u:p@host:4318/x?k=1") == "https://host:4318"
