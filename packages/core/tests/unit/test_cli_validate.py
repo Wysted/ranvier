@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -142,9 +143,9 @@ target = "MOD:not_a_graph"
     assert main(["validate", "--offline"]) == 1
     err = capsys.readouterr().err
     assert "flows.missing.target: " in err
-    assert "flows.prebuilt: flows.prebuilt.target is a compiled graph" in err
+    assert "flows.prebuilt.target is a compiled graph" in err
     assert "compiled graph" in err
-    assert "flows.scalar: flows.scalar.target must be a StateGraph" in err
+    assert "flows.scalar.target must be a StateGraph" in err
     assert "flows.profile.target: unknown LLM profile 'ghost'" in err
     assert "flows.refs.target: unknown tool 'nope'" in err
     assert "flows.refs.target: unknown tool 'web'" in err
@@ -237,3 +238,26 @@ def test_missing_or_broken_manifest_is_one_line(
     assert main(["validate", "--offline"]) == 1
     err = capsys.readouterr().err.strip()
     assert len(err.splitlines()) == 1 and "Traceback" not in err
+
+
+def test_missing_manifest_file_is_one_line(
+    manifest: Manifest, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_AGENT_CONFIG", "does-not-exist.toml")
+    assert main(["validate", "--offline"]) == 1
+    err = capsys.readouterr().err.strip()
+    assert len(err.splitlines()) == 1 and "Traceback" not in err
+    assert "does-not-exist.toml" in err
+
+
+def test_flows_module_does_not_import_validation_deps() -> None:
+    code = (
+        "import sys, graph_agent._internal.runtime.flows;"
+        "bad = [m for m in ('mcp', 'graph_agent._internal.runtime.offline',"
+        " 'graph_agent._internal.llm', 'graph_agent._internal.config.settings')"
+        " if m in sys.modules];"
+        "print(','.join(bad))"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == ""

@@ -42,7 +42,7 @@ def _validate(args: argparse.Namespace) -> int:
     from pydantic import ValidationError
 
     from graph_agent._internal.config.settings import Settings
-    from graph_agent._internal.runtime.flows import validate_manifest
+    from graph_agent._internal.runtime.validate import validate_manifest
 
     try:
         settings = Settings()
