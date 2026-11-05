@@ -23,7 +23,7 @@ DEFAULT_CONFIG_FILE = "graph-agent.toml"
 AUTH_NONE = "none"
 AUTH_API_KEYS = "api_keys"
 # `none`, `api_keys` or a `module:callable` hook returning a Principal (OD-2).
-AUTH_PATTERN = r"^(none|api_keys|[A-Za-z_][\w.]*:[A-Za-z_]\w*)$"
+AUTH_PATTERN = rf"^({AUTH_NONE}|{AUTH_API_KEYS}|[A-Za-z_][\w.]*:[A-Za-z_]\w*)$"
 MAX_PORT = 65535
 
 # Defaults from design sections 5 and 8.
@@ -44,6 +44,7 @@ DEFAULT_API_HOST = "127.0.0.1"  # auth defaults to none, so bind to localhost on
 DEFAULT_API_PORT = 8000  # uvicorn/FastAPI convention
 DEFAULT_LOOP_LAG_READY_MS = 1000  # 10x the warn threshold: a loop this late is not serving traffic
 DEFAULT_HEARTBEAT_S = 15  # cancel_requested is noticed within this delay; cheap one-row update
+LEASE_MIN_HEARTBEATS = 2  # lease must span at least this many heartbeats
 DEFAULT_LEASE_S = 60  # 4 heartbeats: tolerates missed beats before the orphan sweep reclaims
 DEFAULT_MAX_ATTEMPTS = 3  # first try plus two recoveries before orphan_retries_exhausted
 DEFAULT_THREAD_TTL_DAYS = 30  # idle threads get keep_latest pruning after a month
@@ -66,7 +67,7 @@ class ApiKeyRef(BaseModel):
 
     model_config = _STRICT
 
-    env: str
+    key_env: str
     tenant_id: str | None = None
 
 
@@ -107,8 +108,10 @@ class RunsSettings(BaseModel):
 
     @model_validator(mode="after")
     def _lease_outlives_heartbeat(self) -> Self:
-        if self.lease_s <= self.heartbeat_s:
-            raise ValueError("runs.lease_s must be greater than runs.heartbeat_s")
+        if self.lease_s < LEASE_MIN_HEARTBEATS * self.heartbeat_s:
+            raise ValueError(
+                f"runs.lease_s must be at least {LEASE_MIN_HEARTBEATS} x runs.heartbeat_s"
+            )
         return self
 
 
@@ -129,13 +132,7 @@ class ObservabilitySettings(BaseModel):
     model_config = _STRICT
 
     otel_enabled: bool = False
-    otel_endpoint: str | None = None
-
-    @model_validator(mode="after")
-    def _endpoint_when_enabled(self) -> Self:
-        if self.otel_enabled and not self.otel_endpoint:
-            raise ValueError("observability.otel_endpoint is required when otel_enabled")
-        return self
+    otel_endpoint: str | None = None  # None: SDK default / OTEL_* env vars
 
 
 class Settings(BaseSettings):
@@ -164,8 +161,15 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Bootstrap vars (GRAPH_AGENT_CONFIG, GRAPH_AGENT_ENV_FILE) are read from the process
+        # environment only, never from the .env file (they locate it).
         env_file = os.environ.get(ENV_FILE_VAR)
-        if env_file:
+        # Swap only while the source still carries the class default: `_env_file=None` wins.
+        if (
+            env_file
+            and isinstance(dotenv_settings, DotEnvSettingsSource)
+            and dotenv_settings.env_file == DEFAULT_ENV_FILE
+        ):
             dotenv_settings = DotEnvSettingsSource(settings_cls, env_file=env_file)
         return (init_settings, env_settings, dotenv_settings, _toml_source(settings_cls))
 

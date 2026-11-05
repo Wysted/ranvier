@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +14,14 @@ from graph_agent._internal.config.settings import (
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    for var in ("GRAPH_AGENT_ENV_FILE", "GRAPH_AGENT_CONFIG", "GRAPH_AGENT_API__PORT"):
-        monkeypatch.delenv(var, raising=False)
+    for var in [v for v in os.environ if v.startswith("GRAPH_AGENT_")]:
+        monkeypatch.delenv(var)
     monkeypatch.chdir(tmp_path)  # no stray graph-agent.toml / .env from the cwd
 
 
 def make(**init: Any) -> Settings:
     """Settings isolated from the repo .env; `init` goes through the init-args layer."""
-    return Settings(_env_file=None, **init)  # type: ignore[call-arg]  # pydantic-settings arg
+    return Settings(_env_file=None, **init)
 
 
 def _toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
@@ -100,10 +101,18 @@ def test_api_auth_modes() -> None:
     with pytest.raises(ValidationError):
         make(api={"auth": "not valid"})
     assert make(api={"auth": "my.mod:check"}).api.auth == "my.mod:check"
-    ok = make(api={"auth": "api_keys", "keys": {"bot": {"env": "BOT_KEY", "tenant_id": "t1"}}})
-    assert ok.api.keys["bot"].env == "BOT_KEY"
+    ok = make(api={"auth": "api_keys", "keys": {"bot": {"key_env": "BOT_KEY", "tenant_id": "t1"}}})
+    assert ok.api.keys["bot"].key_env == "BOT_KEY"
 
 
-def test_lease_must_outlive_heartbeat() -> None:
+def test_lease_must_span_two_heartbeats() -> None:
     with pytest.raises(ValidationError, match="lease_s"):
-        make(runs={"heartbeat_s": 10, "lease_s": 5})
+        make(runs={"heartbeat_s": 10, "lease_s": 15})
+    assert make(runs={"heartbeat_s": 10, "lease_s": 20}).runs.lease_s == 20
+
+
+def test_explicit_no_env_file_beats_env_file_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _dotenv(tmp_path, monkeypatch, "GRAPH_AGENT_API__PORT=2222\n")
+    assert make().api.port == DEFAULT_API_PORT

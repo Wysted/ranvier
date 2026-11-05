@@ -69,6 +69,11 @@ strict = true
 files = ["src", "tests"]
 mypy_path = ["src"]
 explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
