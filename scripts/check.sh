@@ -12,16 +12,14 @@ step() {
     "$@"
 }
 
-step "ruff check" uv run ruff check .
-step "ruff format --check" uv run ruff format --check .
+step "ruff check" uv run ruff check . ../../examples
+step "ruff format --check" uv run ruff format --check . ../../examples
 step "mypy" uv run mypy
 step "import-linter" uv run lint-imports
 run_pytest() {
     local rc=0
-    uv run pytest -q || rc=$?
-    # Exit 5 = "no tests collected".
-    # shortcut: tolerates an empty suite; drop the exit-5 case once the first unit test lands.
-    [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]
+    uv run pytest -q -c pyproject.toml tests ../../examples/tests || rc=$?
+    [ "$rc" -eq 0 ]
 }
 
 step "pytest (unit)" run_pytest

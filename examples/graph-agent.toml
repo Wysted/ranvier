@@ -1,0 +1,9 @@
+[flows.hello]
+target = "examples.flows.hello:graph"
+version = 1
+description = "Plain StateGraph, no model"
+
+[flows.approval]
+target = "examples.flows.approval:graph"
+version = 1
+description = "Pauses with interrupt() until a human answers"

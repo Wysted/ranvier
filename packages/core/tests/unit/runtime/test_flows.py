@@ -73,6 +73,14 @@ async def test_bad_target_is_loud_and_retryable(user_module: Any, kind: str) -> 
         assert "uncompiled StateGraph" in ei.value.message
 
 
+@pytest.mark.parametrize("factory", [lambda: _builder(), lambda a, b: _builder()])
+async def test_factory_arity_mismatch_has_its_own_message(user_module: Any, factory: Any) -> None:
+    user_module.t = factory
+    with pytest.raises(RunError, match="must accept one FlowContext argument") as ei:
+        await _registry(f="t").get("f")
+    assert ei.value.code == ErrorCode.FLOW_BUILD_FAILED
+
+
 @pytest.fixture
 def cfg_file(tmp_path: Any) -> Any:
     f = tmp_path / "cfg.txt"

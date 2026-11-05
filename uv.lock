@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "graph-agent",
+    "graph-agent-examples",
     "graph-agent-workspace",
 ]
 
@@ -578,6 +579,17 @@ requires-dist = [
 provides-extras = ["openai", "anthropic", "ollama", "otel"]
 
 [[package]]
+name = "graph-agent-examples"
+version = "0.0.0"
+source = { editable = "examples" }
+dependencies = [
+    { name = "graph-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "graph-agent", editable = "packages/core" }]
+
+[[package]]
 name = "graph-agent-workspace"
 version = "0.0.0"
 source = { virtual = "." }
@@ -586,6 +598,7 @@ source = { virtual = "." }
 dev = [
     { name = "blockbuster" },
     { name = "graph-agent", extra = ["anthropic", "ollama", "openai", "otel"] },
+    { name = "graph-agent-examples" },
     { name = "import-linter" },
     { name = "mypy" },
     { name = "pytest" },
@@ -600,6 +613,7 @@ dev = [
 dev = [
     { name = "blockbuster", specifier = ">=1.5" },
     { name = "graph-agent", extras = ["openai", "anthropic", "ollama", "otel"], editable = "packages/core" },
+    { name = "graph-agent-examples", editable = "examples" },
     { name = "import-linter", specifier = ">=2.15" },
     { name = "mypy", specifier = ">=2.4.0" },
     { name = "pytest", specifier = ">=9.1.1" },
