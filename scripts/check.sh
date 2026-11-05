@@ -16,12 +16,6 @@ step "ruff check" uv run ruff check . ../../examples
 step "ruff format --check" uv run ruff format --check . ../../examples
 step "mypy" uv run mypy
 step "import-linter" uv run lint-imports
-run_pytest() {
-    local rc=0
-    uv run pytest -q -c pyproject.toml tests ../../examples/tests || rc=$?
-    [ "$rc" -eq 0 ]
-}
-
-step "pytest (unit)" run_pytest
+step "pytest (unit)" uv run pytest -q -c pyproject.toml tests ../../examples/tests
 
 printf '\nAll checks passed.\n'

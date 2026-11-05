@@ -48,6 +48,8 @@ async def to_builder(target: object, ctx: FlowContext) -> StateGraph[Any, Any, A
     if not isinstance(target, StateGraph) and callable(target):
         try:
             inspect.signature(target).bind(ctx)
+        except ValueError:  # no inspectable signature (builtins): let the call decide
+            pass
         except TypeError as exc:
             raise FlowTargetError("target factory must accept one FlowContext argument") from exc
         if inspect.iscoroutinefunction(target):
