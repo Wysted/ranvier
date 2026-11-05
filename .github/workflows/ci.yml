@@ -1,0 +1,102 @@
+name: CI
+
+# Host-specific file: GitHub Actions was chosen because agintis uses it; the real git host is
+# not decided (design.md section 2). The logic lives in scripts/ so it ports as-is.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # Never re-resolve in CI: every `uv sync`/`uv run` must match uv.lock.
+  UV_FROZEN: "1"
+
+jobs:
+  gate:
+    name: gate (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # OD-7: 3.14 is not yet classified by langgraph, so that leg reports information and
+    # never blocks. Drop `experimental` once langgraph classifies 3.14.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.13"
+            experimental: false
+          - python: "3.14"
+            experimental: true
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      # A missing Postgres fails the integration tests instead of skipping them
+      # (see packages/core/tests/integration/conftest.py).
+      GRAPH_AGENT_REQUIRE_SERVICES: "1"
+    services:
+      # Same image and credentials as docker-compose.yml; host port 54329 is the fixtures' default.
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: graph_agent
+          POSTGRES_PASSWORD: graph_agent
+          POSTGRES_DB: graph_agent
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: scripts/check.sh
+      # Tool config lives in packages/core, so pytest runs from there. The integration tests
+      # arrive with T06+; pytest exits 5 when nothing is collected, tolerated until then.
+      # shortcut: tolerates an empty integration suite, drop `|| [ $? -eq 5 ]` once T06 lands.
+      - name: Integration tests
+        working-directory: packages/core
+        run: uv run pytest -m integration -q -rs || [ $? -eq 5 ]
+
+  install:
+    name: install (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # OD-7: same policy as the gate job.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.13"
+            experimental: false
+          - python: "3.14"
+            experimental: true
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the git-subdirectory install clones this checkout at its commit.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          enable-cache: true
+      - name: Per-member clean install
+        run: scripts/ci-install-check.sh members
+      - name: Git-subdirectory install
+        run: scripts/ci-install-check.sh git
