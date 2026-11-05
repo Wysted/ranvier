@@ -615,6 +615,23 @@ async def prepare_thread_run(
     return pin
 
 
+async def cancel_pending_run(container: RunnerResources, runs: RunsRepository, run: Run) -> None:
+    """Best-effort `request_cancel` of a row whose request failed; survives cancellation (1q, 1z).
+
+    A failure is logged, never raised: it must not replace the error that got us here.
+    """
+
+    async def cancel() -> None:
+        try:
+            await runs.request_cancel(run.run_id, run.thread_id)
+        except Exception:
+            # shortcut: if this also fails the row stays pending and the orphan sweep re-defers
+            # it, so the run may still execute; upgrade if that surprises clients.
+            logger.exception("could not cancel run %s after a failed request", run.run_id)
+
+    await asyncio.shield(container.active_runs.spawn(cancel()))
+
+
 async def _initial_input(checkpointer: Checkpointer, run: Run) -> Any:
     """`None` if the latest checkpoint already carries this run_id (recovery or drain re-claim).
 

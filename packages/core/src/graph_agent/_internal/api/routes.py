@@ -1,11 +1,10 @@
 """HTTP endpoints (design section 6): runs, SSE streams, thread state, admission."""
 
 import asyncio
-import contextlib
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, aclosing
+from contextlib import AsyncExitStack
 from http import HTTPStatus
 from typing import Annotated, Any, Final
 
@@ -31,6 +30,7 @@ from graph_agent._internal.limits import ShuttingDown, TooManyRuns
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
 from graph_agent._internal.runtime.runner import (
     ActiveRuns,
+    cancel_pending_run,
     check_tenant,
     execute_run,
     prepare_thread_run,
@@ -119,15 +119,14 @@ async def _insert(
 
 
 async def _reap(task: "asyncio.Task[Any]") -> None:
-    """Cancel `task` and wait until it is done, however often this task is cancelled meanwhile.
+    """Cancel `task` and wait for it to finish, shielded from a cancelled anyio scope.
 
-    The caller is already unwinding (its own cancel or close keeps propagating after this), and a
-    cancelled anyio scope re-cancels every `await` (1q): waiting once would return too early.
+    Such a scope re-cancels the waiting task on every loop iteration (1q); the shield makes this
+    one wait. A native cancel still propagates, leaving `task` unfinished.
     """
     task.cancel()
-    while not task.done():
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait({task})
+    with anyio.CancelScope(shield=True):
+        await asyncio.wait({task})
 
 
 async def _frames(
@@ -139,7 +138,7 @@ async def _frames(
     event = first
     # The next event is awaited in a task so the wait can time out into a keepalive.
     pending: asyncio.Task[Any] | None = None
-    async with aclosing(agen):  # leaving early (encoder failure, disconnect) cancels the run
+    try:  # leaving early (encoder failure, disconnect) closes `agen`, which cancels the run
         try:
             while event is not None:
                 frame = encoder.encode(event)
@@ -154,10 +153,13 @@ async def _frames(
                 event = ready.result()
         finally:
             if pending is not None:
-                # Before `aclose`, which would fail with "generator already running" otherwise.
-                await _reap(pending)
+                await _reap(pending)  # before `aclose`: "generator already running" otherwise
                 if not pending.cancelled() and (exc := pending.exception()) is not None:
                     logger.error("run %s: stream failed while closing", run_id, exc_info=exc)
+    finally:
+        # A native cancel during the reap leaves the task unwinding: it closes `agen` itself.
+        if pending is None or pending.done():
+            await agen.aclose()
     if not terminal:
         # Drained for shutdown (or the claim was lost): the run goes on elsewhere; the client polls.
         frame = encoder.handed_over()
@@ -209,20 +211,6 @@ class _SseResponse(StreamingResponse):
             await self._stack.aclose()  # releases the admission slot
 
 
-async def _cancel_run(container: Container, run: Run) -> None:
-    """Best-effort `request_cancel` that survives the caller's cancellation (1q)."""
-
-    async def cancel() -> None:
-        try:
-            await _runs(container).request_cancel(run.run_id, run.thread_id)
-        except Exception:
-            # shortcut: if this also fails the row stays pending and the orphan sweep re-defers
-            # it, so the run may still execute; upgrade if that surprises clients.
-            logger.exception("could not cancel run %s after a failed request", run.run_id)
-
-    await asyncio.shield(container.active_runs.spawn(cancel()))
-
-
 async def _stream(
     container: Container, principal: Principal, thread_id: uuid.UUID, req: RunRequest
 ) -> _SseResponse:
@@ -243,7 +231,7 @@ async def _stream(
             # Claim refused, DB error, handler cancelled: the client gets an error, so the row
             # must not stay claimable.
             try:
-                await _cancel_run(container, run)
+                await cancel_pending_run(container, _runs(container), run)
             finally:
                 await agen.aclose()
             raise
@@ -263,8 +251,8 @@ async def _background(
     try:
         await queue.defer(run.run_id, run.thread_id)
     except BaseException as exc:
-        # The client sees an error, so the row must not run behind its back (see _cancel_run).
-        await _cancel_run(container, run)
+        # The client sees an error, so the row must not run behind its back (cancel_pending_run).
+        await cancel_pending_run(container, _runs(container), run)
         if not isinstance(exc, Exception):
             raise
         logger.error("could not defer run %s", run.run_id, exc_info=exc)

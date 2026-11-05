@@ -360,13 +360,16 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
 async def _run_database(
     settings: "Settings", name: str, input: object, resume: object, thread_id: "UUID"
 ) -> int:
-    import asyncio
     import sys
     from contextlib import aclosing
 
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.runtime.events import ErrorEvent
-    from graph_agent._internal.runtime.runner import execute_run, prepare_thread_run
+    from graph_agent._internal.runtime.runner import (
+        cancel_pending_run,
+        execute_run,
+        prepare_thread_run,
+    )
     from graph_agent._internal.runtime.runs import RunError
 
     async with open_container(settings) as container:
@@ -398,9 +401,7 @@ async def _run_database(
                     first = await anext(events, None)
                 except BaseException:
                     # Claim refused, DB error, Ctrl-C: the row must not stay claimable (1z, 1q).
-                    await asyncio.shield(
-                        container.active_runs.spawn(runs.request_cancel(run.run_id, run.thread_id))
-                    )
+                    await cancel_pending_run(container, runs, run)
                     raise
                 if first is not None:
                     code = _emit(first)

@@ -288,6 +288,22 @@ async def test_initial_input_rule() -> None:
         await runner._initial_input(saver, _run("ask", command={"oops": 1}, input=None))
 
 
+async def test_initial_input_recovery_skips_the_interrupt_rule() -> None:
+    saver = InMemorySaver()
+    run = _run("ask")  # input run whose own first attempt already left an interrupt
+    compiled = _compiled(_builder(_ask), saver)
+    cfg: Any = {
+        "configurable": {"thread_id": str(run.thread_id)},
+        "metadata": {"run_id": str(run.run_id)},
+    }
+    [e async for e in stream_graph(compiled, {"x": 0}, cfg, _ctx(str(run.thread_id)), [])]
+    assert await runner.pending_interrupts(saver, run.thread_id)
+    assert await runner._initial_input(saver, run) is None  # recovery: not rejected
+    with pytest.raises(RunError) as ei:  # a different run's input still is
+        await runner._initial_input(saver, _run("ask", thread_id=run.thread_id))
+    assert ei.value.code is ErrorCode.THREAD_INTERRUPTED
+
+
 def test_run_config_drops_reserved_client_metadata() -> None:
     client = {
         "graph_agent_agent": "spoofed",
