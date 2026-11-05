@@ -25,7 +25,7 @@ from langgraph.types import Command, Interrupt
 from graph_agent._internal.agents.factory import build_agent
 from graph_agent._internal.agents.mcp import McpToolSource
 from graph_agent._internal.agents.spec import AgentSpec
-from graph_agent._internal.agents.tools import Isolation, ToolRegistry, _has_async
+from graph_agent._internal.agents.tools import Isolation, ToolRegistry, has_async
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.runtime.context import FlowContext, FlowContextImpl, RunContext
 from graph_agent._internal.runtime.events import (
@@ -122,9 +122,8 @@ def flow_context(
             raise KeyError(f"no tool named {missing}; pass flow_context(tools=...)")
         return [tools[n] for n in names]
 
-    sync_only: dict[str, Isolation] = {
-        t.name: "thread" for t in tools.values() if not _has_async(t)
-    }
+    # By object identity: a same-named tool passed directly in an AgentSpec is not the kit's.
+    sync_only: dict[int, Isolation] = {id(t): "thread" for t in tools.values() if not has_async(t)}
 
     async def agent(spec: AgentSpec) -> CompiledStateGraph[Any, Any, Any, Any]:
         # Names resolve against `tools`; the empty registry only wraps the tool objects. A sync-only

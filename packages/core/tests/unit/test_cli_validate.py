@@ -143,9 +143,9 @@ target = "MOD:not_a_graph"
     assert main(["validate", "--offline"]) == 1
     err = capsys.readouterr().err
     assert "flows.missing.target: " in err
-    assert "flows.prebuilt.target is a compiled graph" in err
+    assert "flows.prebuilt: target is a compiled graph" in err
     assert "compiled graph" in err
-    assert "flows.scalar.target must be a StateGraph" in err
+    assert "flows.scalar: target must be a StateGraph" in err
     assert "flows.profile.target: unknown LLM profile 'ghost'" in err
     assert "flows.refs.target: unknown tool 'nope'" in err
     assert "flows.refs.target: unknown tool 'web'" in err

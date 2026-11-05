@@ -1,5 +1,6 @@
 """The public test kit, exercised through the real runner mapping."""
 
+import threading
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
@@ -125,22 +126,49 @@ def test_missing_model_and_tool_fail_loudly() -> None:
 
 
 async def test_sync_only_tool_runs_in_a_thread() -> None:
-    @tool
-    def add(a: int, b: int) -> int:
-        """Add two numbers."""
-        return a + b
+    loop_thread = threading.get_ident()
 
-    call = AIMessage(content="", tool_calls=[{"name": "add", "args": {"a": 2, "b": 3}, "id": "c1"}])
-    ctx = flow_context(models={"fast": FakeChatModel([call, "done"])}, tools={"add": add})
+    @tool
+    def where() -> int:
+        """Report the thread id."""
+        return threading.get_ident()
+
+    call = AIMessage(content="", tool_calls=[{"name": "where", "args": {}, "id": "c1"}])
+    ctx = flow_context(models={"fast": FakeChatModel([call, "done"])}, tools={"where": where})
 
     async def factory(c: FlowContext) -> StateGraph[Any, Any, Any, Any]:
         b = StateGraph(MessagesState)
-        b.add_node("calc", await c.agent(AgentSpec(name="calc", profile="fast", tools=["add"])))
-        b.add_edge(START, "calc")
+        b.add_node("a", await c.agent(AgentSpec(name="a", profile="fast", tools=["where"])))
+        b.add_edge(START, "a")
         return b
 
-    result = await run_flow(factory, {"messages": [HumanMessage("2+3?")]}, ctx=ctx)
-    assert [m.content for m in result.values["messages"] if m.type == "tool"] == ["5"]
+    result = await run_flow(factory, {"messages": [HumanMessage("go")]}, ctx=ctx)
+    [ran_in] = [m.content for m in result.values["messages"] if m.type == "tool"]
+    assert ran_in != str(loop_thread)
+
+
+async def test_same_named_async_tool_in_spec_is_not_forced_to_a_thread() -> None:
+    @tool("x")
+    def sync_x() -> str:
+        """Sync x."""
+        return "sync"
+
+    @tool("x")
+    async def async_x() -> str:
+        """Async x."""
+        return "async"
+
+    call = AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "c1"}])
+    ctx = flow_context(models={"fast": FakeChatModel([call, "done"])}, tools={"x": sync_x})
+
+    async def factory(c: FlowContext) -> StateGraph[Any, Any, Any, Any]:
+        b = StateGraph(MessagesState)
+        b.add_node("a", await c.agent(AgentSpec(name="a", profile="fast", tools=[async_x])))
+        b.add_edge(START, "a")
+        return b
+
+    result = await run_flow(factory, {"messages": [HumanMessage("go")]}, ctx=ctx)
+    assert [m.content for m in result.values["messages"] if m.type == "tool"] == ["async"]
 
 
 async def test_agent_with_fake_mcp_source() -> None:

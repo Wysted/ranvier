@@ -53,10 +53,10 @@ async def to_builder(target: object, ctx: FlowContext) -> StateGraph[Any, Any, A
             if inspect.isawaitable(target):  # async __call__ objects, partials
                 target = await target
     if isinstance(target, CompiledStateGraph):
-        raise FlowTargetError("is a compiled graph; export the uncompiled StateGraph")
+        raise FlowTargetError("target is a compiled graph; export the uncompiled StateGraph")
     if not isinstance(target, StateGraph):
         raise FlowTargetError(
-            f"must be a StateGraph or a factory(FlowContext) returning one, "
+            f"target must be a StateGraph or a factory(FlowContext) returning one, "
             f"got {type(target).__name__}"
         )
     return target
@@ -95,7 +95,8 @@ class FlowRegistry:
         except RunError:
             raise
         except FlowTargetError as exc:  # wrong kind of target: our own message, safe to show
-            raise _build_failed(f"{key} {exc}") from None  # no cause: validate treats it as ours
+            # no cause: validate treats the message as ours
+            raise _build_failed(f"flows.{name}: {exc}") from None
         except Exception as exc:  # user import/factory/compile code: fail this run, not the process
             # Client message: key + exception type only (user exceptions may carry secrets).
             raise _build_failed(f"{key}: {type(exc).__name__}") from exc

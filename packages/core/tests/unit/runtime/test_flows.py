@@ -66,7 +66,7 @@ async def test_bad_target_is_loud_and_retryable(user_module: Any, kind: str) -> 
         "factory_compiled": lambda ctx: _builder().compile(),
         "other": 42,
     }[kind]
-    with pytest.raises(RunError, match=r"flows\.f\.target") as ei:
+    with pytest.raises(RunError, match=r"flows\.f: target") as ei:
         await _registry(f="t").get("f")
     assert ei.value.code == ErrorCode.FLOW_BUILD_FAILED and ei.value.retryable
     if kind != "other":
