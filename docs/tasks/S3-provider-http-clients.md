@@ -8,7 +8,7 @@ unblocks: [T08]
 owner: sa-debug-py
 reviewer: sa-review-py
 branch: task/S3-provider-http-clients
-status: todo
+status: done
 ---
 
 ## Goal

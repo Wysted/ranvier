@@ -321,7 +321,7 @@ State is JSON-serializable by convention; a value the encoder cannot serialize p
 
 ## 7. Agents kit
 
-`await ctx.agent(spec)` builds `create_agent(model=ctx.model(spec.profile), tools=registry(spec.tools) + mcp(spec.mcp_servers), system_prompt=..., middleware=[SkillsMiddleware(spec.skills), *spec.middleware], response_format=..., name=spec.name)`. No checkpointer is passed: as a node it uses the parent's, as a tool it is stateless per call.
+`await ctx.agent(spec)` builds `create_agent(model=ctx.model(spec.profile)` tagged with the agent name (section 9, usage ledger)`, tools=registry(spec.tools) + mcp(spec.mcp_servers), system_prompt=..., middleware=[SkillsMiddleware(spec.skills), *spec.middleware], response_format=..., name=spec.name)`. No checkpointer is passed: as a node it uses the parent's, as a tool it is stateless per call.
 
 | Piece | v0.1 behavior |
 |-------|---------------|
@@ -361,7 +361,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | Concern | Mechanism | Config key (default) |
 |---------|-----------|----------------------|
 | Run admission | Process semaphore shared by inline runs; Procrastinate worker `concurrency` set to the same value | `limits.max_active_runs` (32), `limits.admission_wait_s` (5) |
-| LLM provider concurrency | One shared `httpx.AsyncClient` per provider with connection limits passed to the integration (open check per integration) | `llm.providers.<p>.max_connections` (16) |
+| LLM provider concurrency | One shared connection pool per provider with `Limits(max_connections)`: openai and OpenAI-compatible get an `httpx2.AsyncClient` as `http_async_client`; anthropic gets an `httpx2.AsyncClient` seeded into the model's SDK client (no kwarg in langchain-anthropic 1.7.10; private attribute, `shortcut:` plus identity test); ollama gets a shared `httpx.AsyncHTTPTransport` through `async_client_kwargs` (S3) | `llm.providers.<p>.max_connections` (16) |
 | LLM call timeout and retries | Profile `timeout_s`, `max_retries` override SDK defaults (600 s, 2) | per profile (60, 2) |
 | MCP server | Semaphore + `asyncio.timeout` per server in the MCP port | `mcp.servers.<s>.max_concurrency`, `timeout_s` |
 | Tool | Semaphore + `asyncio.timeout` per tool in the registry wrapper | `tools.<t>.*`, `limits.tool_timeout_s` (30) |
@@ -390,11 +390,11 @@ temperature = 0
 timeout_s = 60
 ```
 
-Kept rules: keyed providers must name `api_key_env`; `base_url` must be https except localhost; `stream_usage` on for OpenAI-compatible providers so streamed runs report tokens. Built with `init_chat_model`; provider packages are extras (`[openai]`, `[anthropic]`, `[ollama]`).
+Kept rules: keyed providers must name `api_key_env`; `base_url` must be https except localhost; `stream_usage=True` for every `openai` profile, api.openai.com included (a shared `http_async_client` turns off langchain-openai's default); anthropic streams usage by default and ollama always reports it. Ollama has no `timeout`/`max_retries` fields: the timeout goes into `async_client_kwargs`, retries are not supported (S3). Built with `init_chat_model`; provider packages are extras (`[openai]`, `[anthropic]`, `[ollama]`).
 
 **Observability** (`[otel]` extra): OpenInference LangChain instrumentation exported via OTLP; backend chosen by config (Phoenix today). Span attributes `graph_agent.flow`, `graph_agent.run_id`, `graph_agent.thread_id` defined in one module. Boot fails if LangSmith tracing env vars are on (ported guard). Metrics (loop lag, executor occupancy, pool stats, semaphore waiters, active runs) go through OTel when enabled, else to logs.
 
-**Usage ledger**: a per-run callback aggregates `usage_metadata` per `(model, agent)`; rows are upserted at run end, including failed and recovered runs (attempts accumulate).
+**Usage ledger**: a per-run callback aggregates `usage_metadata` per `(model, agent)`; the agent is read in `on_chat_model_start` from the metadata key `graph_agent_agent`, which `build_agent` sets on a `model_copy` of the profile model (local callback metadata, so the innermost agent wins); `lc_agent_name` is not used because a parent agent's value overrides it when the subagent runs with the parent's config (S3); rows are upserted at run end, including failed and recovered runs (attempts accumulate).
 
 | `graph_agent.usage` column | Notes |
 |----------------------------|-------|
@@ -520,8 +520,6 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 | Own MCP adapter: one `mcp.Client` kept open for the process reuses its session; reconnect after a server restart; a failure on one request does not kill concurrent ones (python-sdk #2604, fixed only in v2: confirm in the pinned 2.x); image and resource blocks reach the chosen chat models | MCP port design |
 | Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
-| Each provider integration accepts a shared `http_async_client` with limits (else a delegating model wrapper is needed) | Provider concurrency |
-| `create_agent(name=...)` exposes the agent name in callback metadata | Usage per subagent |
 | `uv add "git+...@tag#subdirectory=packages/core"` works | Distribution |
 | `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |
 | `ProcessPoolExecutor.kill_workers` behavior on 3.14; fallback on 3.13 | CPU tool timeout |
