@@ -83,13 +83,26 @@ def test_unknown_top_level_toml_key_names_the_key(
         make()
 
 
-def test_dotenv_tolerates_unrelated_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dotenv_ignores_foreign_and_bootstrap_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _dotenv(
         tmp_path,
         monkeypatch,
         "OPENAI_API_KEY=sk-x\nGRAPH_AGENT_CONFIG=other.toml\nGRAPH_AGENT_API__PORT=2222\n",
     )
     assert Settings().api.port == 2222
+
+
+def test_dotenv_prefixed_typo_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _dotenv(tmp_path, monkeypatch, "GRAPH_AGENT_DATBASE__URL=postgresql://x\n")
+    with pytest.raises(ValidationError, match="datbase"):
+        Settings()
+
+
+def test_api_key_env_cannot_name_own_secrets() -> None:
+    with pytest.raises(ValidationError, match="GRAPH_AGENT_"):
+        make(api={"auth": "api_keys", "keys": {"b": {"key_env": "GRAPH_AGENT_DATABASE__URL"}}})
 
 
 def test_unknown_group_key_names_the_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

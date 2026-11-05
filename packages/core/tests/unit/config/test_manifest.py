@@ -106,7 +106,21 @@ def test_bad_tool_isolation_rejected() -> None:
         make(tools={"t": {**FLOW, "isolation": "fork"}})
 
 
-@pytest.mark.parametrize("schedule", ["* * * *", "* * * * * *", "61 * * * *", "nope", "@daily"])
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        "* * * *",
+        "* * * * * *",
+        "61 * * * *",
+        "nope",
+        "@daily",
+        "0 0 30 2 *",  # parses, never fires
+        "R * * * *",
+        "0 H * * *",
+        "1,R * * * *",
+        "*/5 R/2 * * *",
+    ],
+)
 def test_bad_cron_rejected(schedule: str) -> None:
     with pytest.raises(ValidationError, match="cron"):
         make(flows={"f": {**FLOW, "crons": [{"schedule": schedule}]}})
@@ -127,6 +141,8 @@ def test_next_fire_is_utc_and_strictly_after() -> None:
         {"provider": "ollama", "model": "m", "base_url": "http://remote:11434"},
         {"provider": "ollama", "model": "m", "max_retries": 1},
         {"provider": "ollama", "model": "m", "api_key_env": "not a name"},
+        {"provider": "ollama", "model": "m", "api_key_env": "OLLAMA_KEY"},
+        {"provider": "openai", "model": "m", "api_key_env": "GRAPH_AGENT_DATABASE__URL"},
         {"provider": "other", "model": "m"},
         {"provider": "ollama", "model": ""},
     ],
@@ -154,6 +170,19 @@ def test_mcp_rules() -> None:
         make(mcp={"servers": {"s": {"url": "https://x.io", "headers_env": {"A": "not a name"}}}})
 
 
+def test_mcp_header_env_cannot_name_own_secrets() -> None:
+    with pytest.raises(ValidationError, match=r"headers_env"):
+        make(mcp={"servers": {"s": {"url": "https://x.io", "headers_env": {"A": "GRAPH_AGENT_X"}}}})
+
+
+@pytest.mark.parametrize("url", ["https://u:hunter2@x.io/mcp", "https://hunter2@x.io/mcp"])
+def test_url_userinfo_rejected_without_echoing_secret(url: str) -> None:
+    with pytest.raises(ValidationError) as ei:
+        make(mcp={"servers": {"s": {"url": url}}})
+    assert "hunter2" not in str(ei.value)
+    assert "credentials" in str(ei.value)
+
+
 def test_unknown_provider_settings_key_rejected() -> None:
     with pytest.raises(ValidationError):
         make(llm={"providers": {"mistral": {}}})
@@ -171,3 +200,13 @@ def test_import_target_is_lazy_and_errors_name_module_and_attr(
         import_target("t05_probe:missing")
     with pytest.raises(TargetImportError, match="no_such_mod_t05"):
         import_target("no_such_mod_t05:x")
+
+
+def test_import_target_wraps_any_import_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "t05_boom.py").write_text("raise RuntimeError('boom')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(TargetImportError, match=r"t05_boom.*obj.*boom") as ei:
+        import_target("t05_boom:obj")
+    assert isinstance(ei.value.__cause__, RuntimeError)

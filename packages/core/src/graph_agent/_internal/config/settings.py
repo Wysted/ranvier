@@ -13,7 +13,14 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from graph_agent._internal.config.manifest import FlowSpec, LlmSettings, McpSettings, Name, ToolSpec
+from graph_agent._internal.config.manifest import (
+    EnvName,
+    FlowSpec,
+    LlmSettings,
+    McpSettings,
+    Name,
+    ToolSpec,
+)
 
 ENV_PREFIX = "GRAPH_AGENT_"
 ENV_NESTED_DELIMITER = "__"
@@ -69,7 +76,7 @@ class ApiKeyRef(BaseModel):
 
     model_config = _STRICT
 
-    key_env: str
+    key_env: EnvName
     tenant_id: str | None = None
 
 
@@ -144,6 +151,7 @@ class Settings(BaseSettings):
         env_nested_delimiter=ENV_NESTED_DELIMITER,
         env_file=DEFAULT_ENV_FILE,
         extra="forbid",
+        hide_input_in_errors=True,  # the outer model decides: keeps secrets out of error text
     )
 
     database: DatabaseSettings = DatabaseSettings()
@@ -178,11 +186,19 @@ class Settings(BaseSettings):
 
 
 class _FieldsOnlyDotEnv(DotEnvSettingsSource):
-    """With `extra="forbid"` pydantic-settings turns every unrelated .env line (OPENAI_API_KEY,
-    GRAPH_AGENT_CONFIG, ...) into an extra key and rejects it; keep only real fields."""
+    """With `extra="forbid"` pydantic-settings turns every unrelated .env line (OPENAI_API_KEY, ...)
+    into an extra key and rejects it. Keep real fields and GRAPH_AGENT_* lines (so a typo like
+    GRAPH_AGENT_DATBASE__URL still fails), minus the bootstrap vars that locate the files.
+    Typos in the PROCESS environment stay silent: EnvSettingsSource reads only known fields."""
 
     def __call__(self) -> dict[str, Any]:
-        return {k: v for k, v in super().__call__().items() if k in self.settings_cls.model_fields}
+        prefix = ENV_PREFIX.lower()
+        bootstrap = {CONFIG_FILE_VAR.lower(), ENV_FILE_VAR.lower()}
+        return {
+            k: v
+            for k, v in super().__call__().items()
+            if k in self.settings_cls.model_fields or (k.startswith(prefix) and k not in bootstrap)
+        }
 
 
 def _toml_source(settings_cls: type[BaseSettings]) -> TomlConfigSettingsSource:
