@@ -8,7 +8,7 @@ unblocks: [T19, T31, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T30-agent-factory
-status: todo
+status: done
 ---
 
 ## Goal

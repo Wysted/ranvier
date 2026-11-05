@@ -35,7 +35,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T27 | `agents/spec.py` + `agents/tools.py`: `AgentSpec`, tool registry, timeout/semaphore wrappers, thread/process isolation | 9 | T05, T09 | sa-dev-py | [T27](tasks/T27-agent-spec-tools.md) | done |
 | T28 | `agents/skills.py`: SKILL.md loader + `load_skill` middleware | 9 | T02 | sa-dev-py | [T28](tasks/T28-skills.md) | done |
 | T29 | `agents/mcp.py`: `McpToolSource` port + own adapter over `mcp` SDK v2, tests with in-process FastMCP | 9 | T05, T09, S2 | sa-dev-py | [T29](tasks/T29-mcp-adapter.md) | done |
-| T30 | `agents/factory.py`: `build_agent`, `as_tool`, `ctx.agent(spec)` | 9 | T08, T12, T27, T28, T29 | sa-dev-py | [T30](tasks/T30-agent-factory.md) | todo |
+| T30 | `agents/factory.py`: `build_agent`, `as_tool`, `ctx.agent(spec)` | 9 | T08, T12, T27, T28, T29 | sa-dev-py | [T30](tasks/T30-agent-factory.md) | done |
 | T31 | `examples/` research flow (subagent + MCP) with tests | 9 | T20, T30 | sa-dev-py | [T31](tasks/T31-example-research.md) | todo |
 | T32 | `usage.py`: ledger callback, repository, `usage` CLI report (genai-prices at read time) | 10 | T06, T15 | sa-dev-py | [T32](tasks/T32-usage-ledger.md) | todo |
 | T33 | OTel span attributes and metrics in the runner (incl. loop lag gauge) | 10 | T10, T16 | sa-dev-py | [T33](tasks/T33-otel-runner.md) | todo |
