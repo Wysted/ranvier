@@ -1,10 +1,15 @@
-"""Checks 2b and 1b: the stalled-jobs sweep vs a re-deferred run, and the periodic dedup gap.
+"""Checks 2b, 2c and 1b: the stalled-jobs sweep vs a re-deferred run, sweep exclusion, and the
+periodic dedup gap.
 
 A stalled job is simulated as `doing` with `worker_id` NULL, which `get_stalled_jobs` reports
-(queries.sql:39-53); the real SIGKILL path is stalled_check.py.
+(queries.sql:39-53); the real SIGKILL path is stalled_check.py and 2c below.
+`python sweep_check.py` drives; `python sweep_check.py worker` is the worker killed mid-sweep.
 """
 
 import asyncio
+import signal
+import sys
+import time
 import uuid
 from collections.abc import Iterable
 
@@ -17,9 +22,17 @@ from procrastinate.schema import SchemaManager
 DB = "s4_sweep"
 PERIODIC_QUEUE = "s4_periodic"  # no worker listens: the probe jobs never run
 RUN_NAMESPACE = uuid.UUID(int=0)  # any fixed namespace; T25 picks its own
+# Any fixed bigint for pg_try_advisory_xact_lock; T25 names its own.
+SWEEP_LOCK_KEY = 4_250_001
+SWEEP_QUEUE = "s4_sweep"
+HEARTBEAT_S = 0.5
+STALLED_S = 2.0  # seconds_since_heartbeat used by the sweep (30 in production)
+KILLED_HOLD_S = 600.0  # the killed worker's sweep never ends on its own
 
 app = make_app(DB)
 ran: list[str] = []
+swept: list[str] = []
+hold_s = 0.0  # how long a sweep keeps the advisory lock after requeueing
 
 
 @app.task(name="execute_run")
@@ -55,15 +68,43 @@ async def requeue(job: Job) -> str:
     return "retried"
 
 
+def label(job: Job) -> str:
+    return job.task_kwargs.get("run_id", job.task_name)
+
+
 async def requeue_stalled(jobs: Iterable[Job]) -> list[tuple[str, str]]:
     """Recommended sweep step 1 (before orphan re-defer); one bad job never stops the sweep."""
     outcome = []
     for job in jobs:
         try:
-            outcome.append((job.task_kwargs["run_id"], await requeue(job)))
+            outcome.append((label(job), await requeue(job)))
         except exceptions.ConnectorException as exc:  # race: job left `doing` meanwhile
             reason = str(exc.__cause__ or exc.__context__).splitlines()[0]
-            outcome.append((job.task_kwargs["run_id"], f"skipped: {reason}"))
+            outcome.append((label(job), f"skipped: {reason}"))
+    return outcome
+
+
+# No lock=, on purpose: a dead sweep left `doing` would block every later one.
+@app.task(name="sweep", queue=SWEEP_QUEUE, queueing_lock="sweep")
+async def sweep(timestamp: int = 0) -> str:
+    """The T25 sweep shape: exclusion by a transaction-scoped advisory lock on a dedicated
+    connection, so Postgres releases it when the worker dies and no session state leaks."""
+    async with (
+        await psycopg.AsyncConnection.connect(dsn(DB)) as lock_conn,
+        lock_conn.transaction(),
+    ):
+        cur = await lock_conn.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (SWEEP_LOCK_KEY,)
+        )
+        if not (await cur.fetchone())[0]:
+            swept.append("skipped")
+            return "skipped"
+        stalled = await app.job_manager.get_stalled_jobs(
+            seconds_since_heartbeat=STALLED_S
+        )
+        outcome = f"ran, requeue_stalled={await requeue_stalled(stalled)}"
+        await asyncio.sleep(hold_s)
+    swept.append(outcome)
     return outcome
 
 
@@ -168,6 +209,95 @@ def periodic_gap(conn: psycopg.Connection) -> None:
     assert inserted == [1, 1, 0]
 
 
+async def lock_held(conn: psycopg.AsyncConnection) -> bool:
+    cur = await conn.execute(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
+        "AND classid = 0 AND objid = %s",
+        (SWEEP_LOCK_KEY,),
+    )
+    return (await cur.fetchone())[0] > 0
+
+
+async def wait_until(what: str, check, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    while not await check():
+        if time.monotonic() > deadline:
+            raise TimeoutError(what)
+        await asyncio.sleep(0.1)
+
+
+async def sweep_jobs(conn: psycopg.AsyncConnection) -> list[tuple[int, str]]:
+    return await jobs(conn, "sweep")
+
+
+async def sweep_exclusion(conn: psycopg.AsyncConnection) -> None:
+    global hold_s
+
+    # 2c-a: the worker running a sweep is SIGKILLed while the sweep holds the lock.
+    async def lock_released() -> bool:
+        return not await lock_held(conn)
+
+    await sweep.defer_async()
+    killed = await asyncio.create_subprocess_exec(sys.executable, __file__, "worker")
+    await wait_until("killed sweep holds lock", lambda: lock_held(conn))
+    print(
+        "a sweep 1 (worker subprocess) holds the advisory lock:", await lock_held(conn)
+    )
+    killed.send_signal(signal.SIGKILL)
+    await killed.wait()
+    await wait_until("lock released", lock_released)
+    print("a after SIGKILL: lock held =", await lock_held(conn))
+    print("a sweep jobs after kill:", await sweep_jobs(conn))
+    print("a next firing (queueing_lock only dedupes todo):", await defer_sweep())
+    await asyncio.sleep(
+        STALLED_S + HEARTBEAT_S
+    )  # let the dead worker's heartbeat go stale
+    worker = asyncio.create_task(
+        app.run_worker_async(
+            queues=[SWEEP_QUEUE],
+            concurrency=1,
+            update_heartbeat_interval=HEARTBEAT_S,
+            fetch_job_polling_interval=0.2,
+        )
+    )
+
+    async def all_succeeded() -> bool:
+        return {s for _, s in await sweep_jobs(conn)} == {"succeeded"}
+
+    await wait_until("sweeps succeeded", all_succeeded)
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+    print("a sweeps run by the next worker:", swept)
+    print("a sweep jobs:", await sweep_jobs(conn))
+    assert swept[0] == "ran, requeue_stalled=[('sweep', 'retried')]", swept
+    assert len(swept) == 2 and swept[1].startswith("ran"), swept
+
+    # 2c-b: two sweeps overlap (e.g. a duplicate firing, or a stalled-but-alive sweep requeued).
+    swept.clear()
+    hold_s = 0.5
+    print("b two concurrent sweeps:", await asyncio.gather(sweep(), sweep()))
+    assert sorted(s.split(",")[0] for s in swept) == ["ran", "skipped"], swept
+
+
+async def defer_sweep() -> str:
+    try:
+        await sweep.defer_async()
+    except exceptions.AlreadyEnqueued:
+        return "AlreadyEnqueued"
+    return "deferred"
+
+
+async def run_killed_worker() -> None:
+    global hold_s
+    hold_s = KILLED_HOLD_S
+    async with app.open_async():
+        await app.run_worker_async(
+            queues=[SWEEP_QUEUE],
+            update_heartbeat_interval=HEARTBEAT_S,
+            fetch_job_polling_interval=0.2,
+        )
+
+
 async def main() -> None:
     recreate_db(DB)
     with psycopg.connect(dsn(DB), autocommit=True) as conn:
@@ -178,8 +308,10 @@ async def main() -> None:
         await psycopg.AsyncConnection.connect(dsn(DB), autocommit=True) as conn,
     ):
         await stalled_sweep(conn)
+        await sweep_exclusion(conn)
     drop_db(DB)
     print("sweep_check: OK")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(run_killed_worker() if sys.argv[1:2] == ["worker"] else main())
