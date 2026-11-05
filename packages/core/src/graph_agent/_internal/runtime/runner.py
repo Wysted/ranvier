@@ -12,6 +12,7 @@ import math
 import os
 import re
 import socket
+import sys
 import uuid
 from collections.abc import AsyncGenerator, Coroutine, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager
@@ -137,7 +138,7 @@ class ActiveRuns:
         for control in list(self._controls):
             control.request_drain(DRAIN_REASON)
 
-    def __len__(self) -> int:  # T33 reads it as the active-runs gauge
+    def __len__(self) -> int:  # T33 reads it as the active_attempts gauge
         return len(self._controls)
 
 
@@ -298,14 +299,14 @@ async def execute_run(
 
     usage = UsageCallback()  # per attempt: attempts accumulate in the ledger
     attempt = _Attempt()
-    container.active_runs.begin(attempt)
     # The run span lives in its own context, not the consumer's: the generator can be closed from
     # another task (cancelled SSE handler, GC), where detaching a token set here would fail.
     span_ctx = contextvars.copy_context()
     span = container.observability.run_span(
         flow=ctx.flow, run_id=ctx.run_id, thread_id=ctx.thread_id
     )
-    span_ctx.run(span.__enter__)
+    span_ctx.run(span.__enter__)  # before `begin`: a failing span must not strand the attempt
+    container.active_runs.begin(attempt)
     beat = asyncio.create_task(
         _heartbeat(runs, run, token, container, attempt, claimed_at), name=f"beat-{run_id}"
     )
@@ -442,7 +443,7 @@ async def execute_run(
         container.observability.metrics.counter(
             METRIC_ATTEMPT_SECONDS, loop.time() - claimed_at, {"flow": ctx.flow}
         )
-        span_ctx.run(span.__exit__, None, None, None)
+        span_ctx.run(span.__exit__, *sys.exc_info())  # an unexpected error marks the span
 
 
 def _count_attempt(

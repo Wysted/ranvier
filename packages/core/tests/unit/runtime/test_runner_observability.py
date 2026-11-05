@@ -6,12 +6,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from graph_agent._internal.observability.tracing import (
     ATTR_FLOW,
     ATTR_RUN_ID,
     ATTR_THREAD_ID,
     Observability,
 )
+from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.runner import (
     METRIC_ATTEMPT_SECONDS,
     METRIC_ATTEMPTS,
@@ -49,6 +52,7 @@ class Backend:
     metrics: Recorder
     spans: list[Mapping[str, str]] = field(default_factory=list)
     open_spans: int = 0
+    exits: list[type[BaseException] | None] = field(default_factory=list)  # what each span saw
 
     @contextmanager
     def run_span(self, attributes: Mapping[str, str]) -> Iterator[object]:
@@ -57,6 +61,11 @@ class Backend:
         token = SPAN_VAR.set(object())
         try:
             yield SPAN_VAR.get()
+        except BaseException as exc:
+            self.exits.append(type(exc))
+            raise
+        else:
+            self.exits.append(None)
         finally:
             SPAN_VAR.reset(token)  # ValueError when closed from another context
             self.open_spans -= 1
@@ -95,10 +104,43 @@ async def test_client_disconnect_counts_cancelled_and_ends_the_span(
     gen = execute_run(res, run.run_id)
     await anext(gen)
     assert backend.open_spans == 1
+    assert len(res.active_runs) == 1
     await gen.aclose()
     await res.active_runs.settled()
     assert backend.open_spans == 0
     assert backend.metrics.attempts() == ["cancelled"]
+    assert len(res.active_runs) == 0
+    assert backend.exits == [GeneratorExit]
+
+
+async def test_unexpected_failure_reaches_the_span(
+    user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _run("work")
+    res, _ = _resources(run)
+    backend = _instrument(res)
+
+    async def broken(*args: Any) -> Any:
+        raise OSError("checkpointer down")
+
+    monkeypatch.setattr(runner, "_initial_input", broken)
+    with pytest.raises(OSError, match="checkpointer down"):
+        await _events(res, run)
+    assert backend.exits == [OSError]
+
+
+async def test_failing_span_does_not_strand_the_attempt(user_module: types.ModuleType) -> None:
+    run = _run("work")
+    res, _ = _resources(run)
+    backend = _instrument(res)
+
+    def boom(attributes: Mapping[str, str]) -> Any:
+        raise RuntimeError("tracer down")
+
+    backend.run_span = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="tracer down"):
+        await _events(res, run)
+    assert len(res.active_runs) == 0
 
 
 async def test_closing_from_another_task_leaves_the_consumer_context_clean(
