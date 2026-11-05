@@ -20,9 +20,7 @@ TEST_DATABASE_URL_ENV = "GRAPH_AGENT_TEST_DATABASE_URL"
 REQUIRE_SERVICES_ENV = "GRAPH_AGENT_REQUIRE_SERVICES"
 TRUTHY_VALUES = frozenset({"1", "true", "yes"})
 # Matches the dev credentials and host port in docker-compose.yml.
-DEFAULT_DATABASE_URL = (
-    "postgresql://graph_agent:graph_agent@127.0.0.1:54329/graph_agent"
-)
+DEFAULT_DATABASE_URL = "postgresql://graph_agent:graph_agent@127.0.0.1:54329/graph_agent"
 CONNECT_TIMEOUT_SECONDS = 3
 INTEGRATION_DIR = Path(__file__).parent.resolve()
 
@@ -42,9 +40,7 @@ def _unavailable(message: str) -> NoReturn:
 
 
 def _connect(url: str) -> psycopg.Connection[tuple[object, ...]]:
-    return psycopg.connect(
-        url, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS
-    )
+    return psycopg.connect(url, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS)
 
 
 @pytest.fixture(scope="session")
@@ -73,9 +69,7 @@ def database_url() -> Iterator[str]:
     finally:
         with _connect(admin_url) as admin:
             admin.execute(
-                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-                    sql.Identifier(name)
-                )
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name))
             )
 
 
@@ -91,8 +85,6 @@ def clean_database(database_url: str) -> Iterator[str]:
             "WHERE nspname NOT LIKE 'pg\\_%' AND nspname <> 'information_schema'"
         ).fetchall()
         for (schema,) in schemas:
-            conn.execute(
-                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(str(schema)))
-            )
+            conn.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(str(schema))))
         conn.execute("CREATE SCHEMA public")
     yield database_url
