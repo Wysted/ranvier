@@ -5,6 +5,7 @@ Wiring per provider follows docs/spikes/S3.md.
 """
 
 import os
+from contextlib import AsyncExitStack
 from importlib.util import find_spec
 from typing import Any
 
@@ -13,13 +14,18 @@ import httpx2  # noqa: TID251 - llm.py builds the shared pools (design section 2
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from graph_agent._internal.config.manifest import LlmProfile, LlmSettings, ProviderSettings
+from graph_agent._internal.config.manifest import (
+    LlmProfile,
+    LlmSettings,
+    Provider,
+    ProviderSettings,
+)
 
-# provider -> (integration package, extra that installs it)
-_INTEGRATIONS = {
-    "openai": ("langchain_openai", "openai"),
-    "anthropic": ("langchain_anthropic", "anthropic"),
-    "ollama": ("langchain_ollama", "ollama"),
+# provider -> integration package; the extra that installs it is named like the provider
+_INTEGRATIONS: dict[Provider, str] = {
+    "openai": "langchain_openai",
+    "anthropic": "langchain_anthropic",
+    "ollama": "langchain_ollama",
 }
 
 
@@ -33,47 +39,57 @@ class LlmRegistry:
     def __init__(self, settings: LlmSettings) -> None:
         self._settings = settings
         # httpx2 clients (openai, anthropic) and httpx transports (ollama), one per provider.
-        self._clients: dict[str, httpx2.AsyncClient] = {}
-        self._transports: dict[str, httpx.AsyncHTTPTransport] = {}
+        self._clients: dict[Provider, httpx2.AsyncClient] = {}
+        self._transports: dict[Provider, httpx.AsyncHTTPTransport] = {}
+        self._models: dict[str, BaseChatModel] = {}
+        self._closed = False
 
     def model(self, profile: str) -> BaseChatModel:
+        if self._closed:
+            raise LlmError("LLM registry is closed")
+        if (cached := self._models.get(profile)) is not None:
+            return cached
         spec = self._settings.profiles.get(profile)
         if spec is None:
             known = ", ".join(sorted(self._settings.profiles)) or "none"
             raise LlmError(f"unknown LLM profile {profile!r} (configured: {known})")
-        package, extra = _INTEGRATIONS[spec.provider]
-        if find_spec(package) is None:
+        if find_spec(_INTEGRATIONS[spec.provider]) is None:
             raise LlmError(
                 f"profile {profile!r} needs provider {spec.provider!r}: "
-                f"install the extra 'graph-agent[{extra}]'"
+                f"install the extra 'graph-agent[{spec.provider}]'"
             )
         kwargs = self._kwargs(profile, spec)
-        model: Any = init_chat_model(spec.model, model_provider=spec.provider, **kwargs)
+        model: BaseChatModel = init_chat_model(spec.model, model_provider=spec.provider, **kwargs)
         if spec.provider == "anthropic":
             self._seed_anthropic(model, self._client("anthropic"))
-        return model  # type: ignore[no-any-return]
+        self._models[profile] = model
+        return model
 
     async def aclose(self) -> None:
         """Close the shared pools; models are never closed individually (S3)."""
-        clients, transports = list(self._clients.values()), list(self._transports.values())
+        self._closed = True
+        self._models.clear()
+        pools: list[httpx2.AsyncClient | httpx.AsyncHTTPTransport] = [
+            *self._clients.values(),
+            *self._transports.values(),
+        ]
         self._clients.clear()
         self._transports.clear()
-        for client in clients:
-            await client.aclose()
-        for transport in transports:
-            await transport.aclose()
+        async with AsyncExitStack() as stack:  # closes every pool even if one raises
+            for pool in pools:
+                stack.push_async_callback(pool.aclose)
 
-    def _max_connections(self, provider: str) -> int:
-        settings = self._settings.providers.get(provider) or ProviderSettings()  # type: ignore[call-overload]
+    def _max_connections(self, provider: Provider) -> int:
+        settings = self._settings.providers.get(provider) or ProviderSettings()
         return settings.max_connections
 
-    def _client(self, provider: str) -> httpx2.AsyncClient:
+    def _client(self, provider: Provider) -> httpx2.AsyncClient:
         if provider not in self._clients:
             limits = httpx2.Limits(max_connections=self._max_connections(provider))
             self._clients[provider] = httpx2.AsyncClient(limits=limits)
         return self._clients[provider]
 
-    def _transport(self, provider: str) -> httpx.AsyncHTTPTransport:
+    def _transport(self, provider: Provider) -> httpx.AsyncHTTPTransport:
         if provider not in self._transports:
             limits = httpx.Limits(max_connections=self._max_connections(provider))
             self._transports[provider] = httpx.AsyncHTTPTransport(limits=limits)
