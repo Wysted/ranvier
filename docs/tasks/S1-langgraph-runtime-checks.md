@@ -8,7 +8,7 @@ unblocks: [T14, T16, T26]
 owner: sa-debug-py
 reviewer: sa-review-py
 branch: task/S1-langgraph-runtime-checks
-status: todo
+status: done
 ---
 
 ## Goal

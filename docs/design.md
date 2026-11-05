@@ -192,7 +192,7 @@ Profiles, MCP servers and limits live in the same file (sections 7-10).
 | `Callable[[FlowContext], StateGraph \| Awaitable[StateGraph]]` | Yes | For flows needing models, tools or subagents |
 | `CompiledStateGraph` | No, loud error | The platform owns the checkpointer and compile options |
 
-Flows are compiled lazily on first use per process and cached; a build failure fails that run with `flow_build_failed` (retryable) instead of blocking the process. Flows declare `context_schema=RunContext` to get a typed `runtime.context`.
+Flows are compiled lazily on first use per process and cached; a build failure fails that run with `flow_build_failed` (retryable) instead of blocking the process. The runner always passes a `RunContext` instance, so `runtime.context` is that object whether or not the flow declares `context_schema`; declaring `context_schema=RunContext` is optional and only adds typing (S1).
 
 ### Validation: `graph-agent validate [--diagram] [--offline]`
 
@@ -217,11 +217,11 @@ Flow names, versions, node names and state schemas are data stored in runs and c
 
 1. **Claim**: conditional `UPDATE runs SET status='running', lease_owner, lease_expires_at, attempt=attempt+1` where status is `pending`, or `running` with an expired lease. No row updated: another executor owns it, return.
 2. **Resolve** the flow (lazy compile cache) and check its version against the thread.
-3. **Invoke** `graph.astream(input, config, context=RunContext(...), stream_mode=[...], subgraphs=True, version="v2", durability=flow.durability)` with `configurable.thread_id`, `metadata.run_id`, usage and tracing callbacks, inside `asyncio.timeout(flow.timeout_s)`.
+3. **Invoke** `graph.astream(input, config, context=RunContext(...), control=RunControl(), stream_mode=[...], subgraphs=True, version="v2", durability=flow.durability)` (`RunControl` from `langgraph.runtime`, one fresh instance per attempt, kept by the runner so shutdown can drain it) with `configurable.thread_id`, `metadata.run_id`, usage and tracing callbacks, inside `asyncio.timeout(flow.timeout_s)`.
 4. **Heartbeat** every `runs.heartbeat_s`: extends the lease and reads `cancel_requested`.
 5. **Finish**: write the terminal status, error and usage rows.
 
-Input on step 3: original input or `Command(resume=...)` on the first attempt; on a recovery attempt `None` if the latest checkpoint already carries this `run_id`, otherwise the original input again (open check: checkpoint metadata propagation).
+Input on step 3: original input or `Command(resume=...)` on the first attempt; on a recovery attempt `None` if the latest checkpoint's `metadata["run_id"]` (read with `checkpointer.aget_tuple`) equals this `run_id`, otherwise the original input again. `run_id` goes in `config["metadata"]` as a `str`. LangGraph applies the same rule itself (re-sending the original input with the same `metadata.run_id` is a re-entry), so the check is a safety belt, not the only guard (S1). `GraphDrained` (a `GraphBubbleUp`) is caught before generic error handling and sends the run back to `pending`.
 
 ### Runs table (`graph_agent.runs`)
 
@@ -368,7 +368,7 @@ LangGraph's `max_concurrency` is per invocation; R runs times N tool calls is un
 | CPU-heavy tools | `isolation = "process"`: `ProcessPoolExecutor` (forkserver), timeout recycles the pool (`kill_workers`, 3.14) | `limits.cpu_workers` (2) |
 | Run timeout | `asyncio.timeout` around the stream; error `run_timeout` | `flows.<f>.timeout_s` (600) |
 | Node timeout | Native LangGraph 1.2 `add_node(..., timeout=TimeoutPolicy(...))` (async nodes) and `error_handler=` for compensation; the platform does not wrap nodes, the starter documents the pattern | set in the flow |
-| Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs (checkpoint at the next superstep, `GraphDrained`), put them back to `pending` and defer them; uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
+| Graceful shutdown | On SIGTERM, stop admission, call `RunControl.request_drain()` on running runs: running nodes are not cancelled, their superstep finishes and checkpoints, then `astream` raises `langgraph.errors.GraphDrained` before the next superstep (a run in its last superstep just completes); put drained runs back to `pending` and defer them; the requeued attempt resumes with `None` (S1); uvicorn `--timeout-graceful-shutdown` and Procrastinate `shutdown_graceful_timeout` must exceed the longest node timeout | `limits.shutdown_grace_s` (60) |
 | Postgres connections | Separate pools: app, checkpointer, Procrastinate; budget logged at startup | `database.*_pool_max` (5, 10, 5) |
 | Loop health | Lag sampler (sleep drift every 1 s): gauge, warning over threshold, `/readyz` | `limits.loop_lag_warn_ms` (100) |
 | Error isolation | Tool and MCP errors become error `ToolMessage`s; a failing run never touches another; supersteps are transactional | none |
@@ -517,17 +517,15 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 | Check | Why it matters |
 |-------|----------------|
 | Own MCP adapter: one `mcp.Client` kept open for the process reuses its session; reconnect after a server restart; a failure on one request does not kill concurrent ones (python-sdk #2604, fixed only in v2: confirm in the pinned 2.x); image and resource blocks reach the chosen chat models | MCP port design |
-| Checkpoint metadata carries `metadata.run_id` from the config | Recovery input choice (section 5) |
+| Checkpoint `metadata.run_id` round-trip and drain on `AsyncPostgresSaver` (verified in source only, S1) | Recovery input choice (section 5) |
 | Procrastinate periodic tasks can be registered from config (one per cron, with kwargs) and its schema upgrades have a scripted path | Crons, `migrate` |
 | Each provider integration accepts a shared `http_async_client` with limits (else a delegating model wrapper is needed) | Provider concurrency |
 | `create_agent(name=...)` exposes the agent name in callback metadata | Usage per subagent |
 | `uv add "git+...@tag#subdirectory=packages/core"` works | Distribution |
 | `AsyncPostgresSaver` serializes writes per instance (forum claim) | Checkpointer pool sizing |
-| Runtime context reaches nodes when a graph declares no `context_schema` | Flow contract |
 | `ProcessPoolExecutor.kill_workers` behavior on 3.14; fallback on 3.13 | CPU tool timeout |
 | Studio via `langgraph dev` can load a shim that builds factories with a dev `FlowContext` | Dev experience |
 | langgraph on 3.14 (classifiers stop at 3.13; CI tests 3.14) | Runtime image |
-| `RunControl` import path and how it is passed to `astream` in the installed langgraph 1.2.x (sources disagree; no official page found) | Graceful shutdown |
 | Lease expiry while the owner is alive (event-loop stall) cannot double-run: the sweep only requeues if the conditional claim wins and the partial unique index holds | Never run a thread twice |
 
 ## Resolved decisions (2026-11-04)

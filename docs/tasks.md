@@ -46,7 +46,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 
 | ID | Verify | Unblocks | Depends on | Brief | Status |
 |----|--------|----------|------------|-------|--------|
-| S1 | `RunControl` import path and use with `astream` in installed langgraph 1.2.x; runtime context reaches nodes without `context_schema`; checkpoint metadata carries `metadata.run_id` | T14, T16, T26 | T01 | [S1](tasks/S1-langgraph-runtime-checks.md) | todo |
+| S1 | `RunControl` import path and use with `astream` in installed langgraph 1.2.x; runtime context reaches nodes without `context_schema`; checkpoint metadata carries `metadata.run_id` | T14, T16, T26 | T01 | [S1](tasks/S1-langgraph-runtime-checks.md) | done |
 | S2 | `mcp` SDK v2 `Client`: one session reused for the process, reconnect after server restart, one failing request does not kill concurrent ones (#2604) | T29 | T01 | [S2](tasks/S2-mcp-sdk-session.md) | todo |
 | S3 | Each provider integration accepts a shared `http_async_client` with limits; `create_agent(name=...)` shows in callback metadata | T08, T30 | T01 | [S3](tasks/S3-provider-http-clients.md) | todo |
 | S4 | Procrastinate: periodic tasks from config, stalled-jobs API, schema upgrade path; `AsyncPostgresSaver` per-instance write lock claim | T24, T25 | T01, T07 | [S4](tasks/S4-procrastinate-checkpointer.md) | todo |
