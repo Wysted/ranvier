@@ -6,6 +6,7 @@ the runs table: claim, heartbeat, run timeout, cancellation, drain and the fence
 """
 
 import asyncio
+import contextvars
 import logging
 import math
 import os
@@ -24,6 +25,7 @@ from langgraph.runtime import RunControl
 from langgraph.types import Command, StreamMode
 
 from graph_agent._internal.config.settings import Settings
+from graph_agent._internal.observability.tracing import Observability
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.context import RunContext
 from graph_agent._internal.runtime.events import (
@@ -68,6 +70,13 @@ CLIENT_STREAM_MODES: Final = frozenset(_MODE_OF_EVENT.values())
 RUN_EVENT_BUFFER: Final = 256  # events between the stream and a slow consumer (backpressure)
 _OWNER: Final = f"{socket.gethostname()}:{os.getpid()}"
 DRAIN_REASON: Final = "shutdown"
+METRIC_ATTEMPTS: Final = "run_attempts"  # counter, one per attempt, by flow and status
+# shortcut: sum counter (mean only), histogram when the Metrics port grows one
+METRIC_ATTEMPT_SECONDS: Final = "run_attempt_seconds"
+METRIC_CANCELLED_BEFORE_START: Final = (
+    "runs_cancelled_before_start"  # claims that found it cancelled
+)
+STATUS_RELEASED: Final = "released"  # the attempt ended without a terminal write
 
 
 class RunQueue(Protocol):
@@ -146,6 +155,7 @@ class RunnerResources(Protocol):
     flows: FlowRegistry
     checkpointer: Checkpointer
     observers: list[RunObserver]
+    observability: Observability
     queue: RunQueue | None
     active_runs: ActiveRuns
 
@@ -233,6 +243,7 @@ class _Attempt:
     reason: _StopReason | None = None
     timed_out: bool = False
     settled: bool = False  # the run row (or its lease) is already dealt with: no cleanup write
+    counted: bool = False  # the attempt is already in `run_attempts`
 
     def stop(self, reason: _StopReason) -> None:
         self.reason = reason
@@ -276,6 +287,9 @@ async def execute_run(
         str(run.run_id), str(run.thread_id), run.flow, run.flow_version, run.attempt, run.tenant_id
     )
     if claim.outcome is ClaimOutcome.CANCELLED:
+        container.observability.metrics.counter(
+            METRIC_CANCELLED_BEFORE_START, 1, {"flow": ctx.flow}
+        )
         yield metadata_event(ctx)
         yield EndEvent(RunStatus.CANCELLED.value, UsageTotals())
         return
@@ -285,6 +299,13 @@ async def execute_run(
     usage = UsageCallback()  # per attempt: attempts accumulate in the ledger
     attempt = _Attempt()
     container.active_runs.begin(attempt)
+    # The run span lives in its own context, not the consumer's: the generator can be closed from
+    # another task (cancelled SSE handler, GC), where detaching a token set here would fail.
+    span_ctx = contextvars.copy_context()
+    span = container.observability.run_span(
+        flow=ctx.flow, run_id=ctx.run_id, thread_id=ctx.thread_id
+    )
+    span_ctx.run(span.__enter__)
     beat = asyncio.create_task(
         _heartbeat(runs, run, token, container, attempt, claimed_at), name=f"beat-{run_id}"
     )
@@ -297,7 +318,7 @@ async def execute_run(
             ok = await _settle(
                 container,
                 attempt,
-                _finish(container, runs, ctx, token, RunStatus.ERROR, usage, flow_error),
+                _finish(container, attempt, runs, ctx, token, RunStatus.ERROR, usage, flow_error),
             )
             if ok:
                 yield metadata_event(ctx)
@@ -319,7 +340,9 @@ async def execute_run(
                 usage=usage,
             )
             pump = asyncio.create_task(
-                _pump(stream, queue, flow.timeout_s, attempt), name=f"run-{run_id}"
+                _pump(stream, queue, flow.timeout_s, attempt),
+                name=f"run-{run_id}",
+                context=span_ctx,  # LangChain spans parent to the run span
             )
             attempt.pump = pump
             # Also fires if the task is cancelled before it ever starts.
@@ -344,14 +367,16 @@ async def execute_run(
                 ok = await _settle(
                     container,
                     attempt,
-                    _finish(container, runs, ctx, token, RunStatus.CANCELLED, usage),
+                    _finish(container, attempt, runs, ctx, token, RunStatus.CANCELLED, usage),
                 )
                 if ok:
                     yield EndEvent(RunStatus.CANCELLED.value, _totals(usage.totals()))
                 return
             if attempt.reason is _StopReason.LOST:
                 logger.warning("run %s: lease lost, stopping without a terminal write", run_id)
-                await _settle(container, attempt, _notify(container, ctx, RunStatus.RUNNING, usage))
+                await _settle(
+                    container, attempt, _notify(container, attempt, ctx, RunStatus.RUNNING, usage)
+                )
                 yield _error_event(
                     RunError(ErrorCode.INTERNAL_ERROR, "run lease lost", retryable=True)
                 )
@@ -366,13 +391,15 @@ async def execute_run(
             ok = await _settle(
                 container,
                 attempt,
-                _finish(container, runs, ctx, token, RunStatus(end.status), usage),
+                _finish(container, attempt, runs, ctx, token, RunStatus(end.status), usage),
             )
             if ok:
                 yield end
             return
         if isinstance(failure, GraphDrained):  # a GraphBubbleUp, not a failure: hand the run over
-            await _settle(container, attempt, _hand_over(container, runs, run, ctx, token, usage))
+            await _settle(
+                container, attempt, _hand_over(container, attempt, runs, run, ctx, token, usage)
+            )
             return
         if attempt.timed_out:
             error = RunError(
@@ -383,7 +410,9 @@ async def execute_run(
             logger.error("run %s failed", run_id, exc_info=failure)
             error = RunError(ErrorCode.INTERNAL_ERROR, type(failure).__name__, retryable=False)
         ok = await _settle(
-            container, attempt, _finish(container, runs, ctx, token, RunStatus.ERROR, usage, error)
+            container,
+            attempt,
+            _finish(container, attempt, runs, ctx, token, RunStatus.ERROR, usage, error),
         )
         if ok:
             yield _error_event(error)
@@ -400,7 +429,9 @@ async def execute_run(
                 status = RunStatus.ERROR
                 error = RunError(ErrorCode.INTERNAL_ERROR, type(exc).__name__, retryable=False)
             tasks = (beat,) if attempt.pump is None else (attempt.pump, beat)
-            abort = _abort(container, runs, run, ctx, token, status, usage, error, tasks, drain)
+            abort = _abort(
+                container, attempt, runs, run, ctx, token, status, usage, error, tasks, drain
+            )
             await _shielded(container.active_runs, abort)
         raise
     finally:
@@ -408,6 +439,21 @@ async def execute_run(
         if attempt.pump is not None:
             attempt.pump.cancel()
         container.active_runs.end(attempt)
+        container.observability.metrics.counter(
+            METRIC_ATTEMPT_SECONDS, loop.time() - claimed_at, {"flow": ctx.flow}
+        )
+        span_ctx.run(span.__exit__, None, None, None)
+
+
+def _count_attempt(
+    container: RunnerResources, attempt: _Attempt, ctx: RunContext, status: str
+) -> None:
+    """Count the attempt in `run_attempts` once, whichever path ends it."""
+    if not attempt.counted:
+        attempt.counted = True
+        container.observability.metrics.counter(
+            METRIC_ATTEMPTS, 1, {"flow": ctx.flow, "status": status}
+        )
 
 
 def run_config(ctx: RunContext, flow: CompiledFlow, metadata: dict[str, Any]) -> RunnableConfig:
@@ -582,6 +628,7 @@ async def _settle[T](
 
 async def _abort(
     container: RunnerResources,
+    attempt: _Attempt,
     runs: RunsRepository,
     run: Run,
     ctx: RunContext,
@@ -598,19 +645,22 @@ async def _abort(
         async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
             await _stop_tasks(*tasks)
             if drain:
-                await _hand_over(container, runs, run, ctx, token, usage)
+                await _hand_over(container, attempt, runs, run, ctx, token, usage)
             else:
-                await _finish(container, runs, ctx, token, status, usage, error)
+                await _finish(container, attempt, runs, ctx, token, status, usage, error)
     except TimeoutError:
         logger.error(
             "run %s: cleanup exceeded the shutdown budget; lease expiry recovers", ctx.run_id
         )
     except Exception:
         logger.exception("run %s: could not record %s", ctx.run_id, status)
+    finally:  # budget overrun or cancel: nothing was notified, the lease recovers the run
+        _count_attempt(container, attempt, ctx, STATUS_RELEASED)
 
 
 async def _finish(
     container: RunnerResources,
+    attempt: _Attempt,
     runs: RunsRepository,
     ctx: RunContext,
     token: str,
@@ -622,24 +672,28 @@ async def _finish(
     try:
         written = await runs.finish(uuid.UUID(ctx.run_id), token, status, error)
     except Exception:  # the ledger still records what the attempt spent, once
-        await _notify(container, ctx, RunStatus.RUNNING, usage)
+        await _notify(container, attempt, ctx, RunStatus.RUNNING, usage)
         raise
     if not written:
         logger.warning("run %s: lease lost before the terminal write", ctx.run_id)
-        await _notify(container, ctx, RunStatus.RUNNING, usage)
+        await _notify(container, attempt, ctx, RunStatus.RUNNING, usage)
         return False
-    await _notify(container, ctx, status, usage, error)
+    await _notify(container, attempt, ctx, status, usage, error)
     return True
 
 
 async def _notify(
     container: RunnerResources,
+    attempt: _Attempt,
     ctx: RunContext,
     status: RunStatus,
     usage: UsageCallback,
     error: RunError | None = None,
 ) -> None:
     """Tell the observers how this attempt ended (`running`: it ended without a terminal write)."""
+    _count_attempt(
+        container, attempt, ctx, STATUS_RELEASED if status is RunStatus.RUNNING else status.value
+    )
     by_key = usage.snapshot()  # one snapshot: the totals and the breakdown always agree
     outcome = RunOutcome(
         status.value,
@@ -656,6 +710,7 @@ async def _notify(
 
 async def _hand_over(
     container: RunnerResources,
+    attempt: _Attempt,
     runs: RunsRepository,
     run: Run,
     ctx: RunContext,
@@ -679,7 +734,7 @@ async def _hand_over(
             except Exception:  # the lease is already expired: the orphan sweep re-defers it
                 logger.exception("run %s: could not defer after drain", run.run_id)
     finally:
-        await _notify(container, ctx, RunStatus.RUNNING, usage)
+        await _notify(container, attempt, ctx, RunStatus.RUNNING, usage)
 
 
 def _error_event(error: RunError) -> ErrorEvent:
