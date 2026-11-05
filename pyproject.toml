@@ -1,0 +1,23 @@
+[project]
+name = "graph-agent-workspace"
+version = "0.0.0"
+description = "uv workspace root for graph-agent (not published)"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/core"]
+
+[tool.uv.sources]
+graph-agent = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "graph-agent",
+    "blockbuster>=1.5",
+    "import-linter>=2.15",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.1",
+]
