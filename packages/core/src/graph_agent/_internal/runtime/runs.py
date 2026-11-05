@@ -10,7 +10,7 @@ expiry cannot be confused with its previous attempt. Recovery never writes `pend
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final, LiteralString, Self
 
@@ -227,6 +227,25 @@ WHERE status = 'running' AND lease_expires_at < now()
 _STALE_PENDING: LiteralString = """
 SELECT run_id FROM graph_agent.runs
 WHERE status = 'pending' AND created_at < now() - make_interval(secs => %s::float8)
+ORDER BY created_at, run_id
+"""
+
+# A thread is idle when none of its runs is pending or running and the last one ended (or, for
+# a run that never finished, was created) before the cutoff.
+_IDLE_THREADS: LiteralString = """
+SELECT thread_id FROM graph_agent.runs
+GROUP BY thread_id
+HAVING bool_and(status NOT IN ('pending', 'running'))
+   AND max(COALESCE(finished_at, created_at)) < now() - %s
+ORDER BY thread_id
+"""
+
+# Cron firings are deterministic (uuid5), so a repeated firing inserts nothing.
+_INSERT_ONCE: LiteralString = """
+INSERT INTO graph_agent.runs (run_id, thread_id, flow, flow_version, status, input, metadata)
+VALUES (%s, %s, %s, %s, 'pending', %s, %s)
+ON CONFLICT (run_id) DO NOTHING
+RETURNING run_id
 """
 
 
@@ -269,6 +288,23 @@ class RunsRepository:
             ),
         )
         return Run.from_row(rows[0])
+
+    async def create_once(
+        self,
+        *,
+        run_id: uuid.UUID,
+        thread_id: uuid.UUID,
+        flow: str,
+        flow_version: int,
+        input: object,
+        metadata: dict[str, Any],
+    ) -> bool:
+        """Insert a `pending` run unless `run_id` exists. False: it already existed."""
+        rows = await self._fetch(
+            _INSERT_ONCE,
+            (run_id, thread_id, flow, flow_version, Jsonb(input), Jsonb(metadata)),
+        )
+        return bool(rows)
 
     async def get(self, run_id: uuid.UUID, thread_id: uuid.UUID) -> Run | None:
         rows = await self._fetch(
@@ -401,6 +437,17 @@ class RunsRepository:
     async def stale_pending(self, older_than_s: float) -> list[uuid.UUID]:
         """Pending runs older than the threshold (a crash between insert and defer)."""
         return [r["run_id"] for r in await self._fetch(_STALE_PENDING, (older_than_s,))]
+
+    async def thread_ids(self, run_ids: list[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
+        """Thread of each run (the sweep defers by run and thread)."""
+        rows = await self._fetch(
+            "SELECT run_id, thread_id FROM graph_agent.runs WHERE run_id = ANY(%s)", (run_ids,)
+        )
+        return {r["run_id"]: r["thread_id"] for r in rows}
+
+    async def idle_threads(self, idle_for: timedelta) -> list[uuid.UUID]:
+        """Threads with no pending or running run whose last activity is older than `idle_for`."""
+        return [r["thread_id"] for r in await self._fetch(_IDLE_THREADS, (idle_for,))]
 
     async def delete_thread(self, thread_id: uuid.UUID) -> int:
         """Delete the thread's runs; refused (`thread_busy`) while one is running."""

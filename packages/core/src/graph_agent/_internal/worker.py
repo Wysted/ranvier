@@ -1,19 +1,28 @@
 """Procrastinate worker side: the `execute_run` task (design section 5).
 
-Worker processes build their own container; nothing is shared with the API process. T25 adds the
-sweep, prune and cron tasks on the same app.
+Worker processes build their own container; nothing is shared with the API process. The sweep,
+prune and cron tasks (housekeeping) live on the same app.
 """
 
+import hashlib
+import json
 import logging
 import uuid
 from contextlib import aclosing
+from datetime import timedelta
 from typing import Final
 
-from procrastinate import App, RetryStrategy
+from procrastinate import App, RetryStrategy, exceptions, manager
+from procrastinate.jobs import Status
+from psycopg import AsyncConnection
+from psycopg.conninfo import conninfo_to_dict
 
+from graph_agent._internal.config.manifest import CronSpec
+from graph_agent._internal.db.pool import log_connection_budget
 from graph_agent._internal.queue import EXECUTE_RUN, ProcrastinateRunQueue
+from graph_agent._internal.runtime.checkpointer import prune_checkpoints
 from graph_agent._internal.runtime.runner import RunnerResources, execute_run
-from graph_agent._internal.runtime.runs import ErrorCode, RunError
+from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +68,214 @@ def register_tasks(container: RunnerResources) -> App:
                 raise ThreadBusy(str(exc)) from exc
             raise
 
+    if container.runs is None:
+        raise RuntimeError("the worker needs the runs repository in the container")
+    _register_housekeeping(container, queue, container.runs)
     return queue.app
+
+
+# --- housekeeping: sweep, prune, crons (design section 5) ------------------------------------
+
+SWEEP: Final = "graph_agent.sweep"
+PRUNE: Final = "graph_agent.prune"
+FIRE_CRON: Final = "graph_agent.fire_cron"
+SWEEP_PERIODIC_ID: Final = "sweep"
+PRUNE_PERIODIC_ID: Final = "prune"
+SWEEP_CRON: Final = "* * * * *"  # every minute
+PRUNE_CRON: Final = "17 3 * * *"  # daily, off the hour
+# Any fixed bigint shared by every sweep (the migrations lock uses another key).
+SWEEP_LOCK_KEY: Final = 0x6772617073776570
+# Heartbeat age after which a job counts as stalled (Procrastinate's `stalled_worker_timeout`).
+STALLED_HEARTBEAT_S: Final = 30
+# A lost host frees the sweep lock in ~25 s: idle 10 + 3 probes x 5 s.
+LOCK_CONN_OPTIONS: Final = (
+    "-c tcp_keepalives_idle=10 -c tcp_keepalives_interval=5 -c tcp_keepalives_count=3"
+)
+LOCK_CONNECT_TIMEOUT_S: Final = 10
+# Procrastinate's standalone LISTEN connection and the sweep's lock connection.
+WORKER_EXTRA_CONNECTIONS: Final = 2
+CRON_NAMESPACE: Final = uuid.UUID("5d0b8c3e-7a64-4f0e-9a52-6c1b3f8e2d17")
+SWEEP_SKIPPED_METRIC: Final = "sweep_skipped_consecutive"
+PERIODIC_ID_DIGEST_CHARS: Final = 16
+
+
+def cron_periodic_id(flow: str, cron: CronSpec) -> str:
+    """Stable id from the cron's content, never its list position (reordering must not re-fire)."""
+    content = json.dumps([cron.schedule, cron.input], sort_keys=True, separators=(",", ":"))
+    return f"{flow}:{hashlib.sha256(content.encode()).hexdigest()[:PERIODIC_ID_DIGEST_CHARS]}"
+
+
+def _lock_conn_options(url: str) -> str:
+    existing = conninfo_to_dict(url).get("options")
+    return f"{existing} {LOCK_CONN_OPTIONS}" if existing else LOCK_CONN_OPTIONS
+
+
+async def requeue_stalled(app: App) -> None:
+    """Retry jobs whose worker died. Runs BEFORE the orphan re-defer (see `redefer_orphans`)."""
+    for job in await app.job_manager.get_stalled_jobs(seconds_since_heartbeat=STALLED_HEARTBEAT_S):
+        try:
+            await app.job_manager.retry_job(job)
+        except exceptions.UniqueViolation as exc:
+            try:
+                if exc.constraint_name != manager.QUEUEING_LOCK_CONSTRAINT:
+                    raise
+                # A `todo` job for the same run exists: close the dead one so its thread lock frees.
+                await app.job_manager.finish_job(job, status=Status.FAILED, delete_job=False)
+            except exceptions.ConnectorException:
+                logger.warning("stalled job %s not requeued", job.id, exc_info=True)
+        except exceptions.ConnectorException:  # raced: the job left `doing` meanwhile
+            logger.warning("stalled job %s not requeued", job.id, exc_info=True)
+
+
+async def redefer_orphans(
+    res: RunnerResources, runs: RunsRepository, queue: ProcrastinateRunQueue
+) -> None:
+    """Re-defer `running` runs with an expired lease as they are, and stale `pending` ones.
+
+    Never writes `pending`. A job that already exists makes the defer a no-op; a job that loses
+    the claim exits.
+    """
+    expired = await runs.expired(res.settings.runs.max_attempts)
+    if expired.exhausted:
+        logger.warning("runs out of attempts: %s", expired.exhausted)
+    stale = await runs.stale_pending(res.settings.runs.pending_redefer_s)
+    threads = await runs.thread_ids([*expired.redefer, *stale])
+    for run_id in expired.redefer:
+        if run_id in threads:
+            await queue.defer(run_id, threads[run_id], recovery=True)
+    for run_id in stale:  # oldest first
+        if run_id in threads:
+            await queue.defer(run_id, threads[run_id])
+
+
+async def run_sweep(
+    res: RunnerResources, runs: RunsRepository, queue: ProcrastinateRunQueue
+) -> bool:
+    """One sweep; False if another one holds the lock.
+
+    The lock is `pg_try_advisory_xact_lock` on a dedicated connection held for the whole sweep:
+    Postgres frees it when the connection or its host dies and no session state outlives it.
+    """
+    url = res.settings.database.url.get_secret_value()
+    conn = await AsyncConnection.connect(
+        url, options=_lock_conn_options(url), connect_timeout=LOCK_CONNECT_TIMEOUT_S
+    )
+    async with conn, conn.transaction():
+        cur = await conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (SWEEP_LOCK_KEY,))
+        row = await cur.fetchone()
+        if row is None or not row[0]:
+            return False
+        await requeue_stalled(queue.app)
+        await redefer_orphans(res, runs, queue)
+    return True
+
+
+async def prune_threads(res: RunnerResources, runs: RunsRepository) -> None:
+    """`keep_latest` past `threads.ttl_days` idle, whole-thread delete past `delete_after_days`."""
+    cfg = res.settings.threads
+    doomed = await runs.idle_threads(timedelta(days=cfg.delete_after_days))
+    # shortcut: re-prunes every thread in the keep_latest window on each run (idempotent);
+    # track pruned threads if the window gets large enough to hurt.
+    stale = set(await runs.idle_threads(timedelta(days=cfg.ttl_days))) - set(doomed)
+    if stale:
+        await prune_checkpoints(res.checkpointer, sorted(stale))
+    for thread_id in doomed:
+        # Checkpoints first: a failed run-row delete leaves the thread retryable next time.
+        await res.checkpointer.adelete_thread(str(thread_id))
+        try:
+            await runs.delete_thread(thread_id)
+        except RunError as exc:  # a run started since the thread went idle
+            logger.warning("thread %s not deleted: %s", thread_id, exc)
+
+
+async def fire_cron(
+    res: RunnerResources,
+    runs: RunsRepository,
+    queue: ProcrastinateRunQueue,
+    *,
+    timestamp: int,
+    flow: str,
+    input: dict[str, object],
+    periodic_id: str,
+) -> None:
+    """One cron firing: a run on a new thread, idempotent per (periodic_id, timestamp).
+
+    A lagging deferrer can defer an old firing twice (S4): the ids are deterministic and the
+    insert ignores conflicts, so the second one stops here.
+    """
+    spec = res.settings.flows.get(flow)
+    if spec is None:
+        logger.error("cron %s: flow %r is not in the manifest", periodic_id, flow)
+        return
+    key = f"{periodic_id}:{timestamp}"
+    run_id = uuid.uuid5(CRON_NAMESPACE, f"run:{key}")
+    thread_id = uuid.uuid5(CRON_NAMESPACE, f"thread:{key}")
+    created = await runs.create_once(
+        run_id=run_id,
+        thread_id=thread_id,
+        flow=flow,
+        flow_version=spec.version,
+        input=input,
+        metadata={"cron": periodic_id, "scheduled_at": timestamp},
+    )
+    if not created:
+        logger.debug("cron firing %s already has its run", key)
+        return
+    await queue.defer(run_id, thread_id)
+
+
+def _register_housekeeping(
+    res: RunnerResources, queue: ProcrastinateRunQueue, runs: RunsRepository
+) -> None:
+    app = queue.app
+    skipped = 0  # consecutive skipped sweeps: a stuck lock holder shows up as a growing gauge
+
+    # No `lock=`: a dead sweep left `doing` would block every later one. `queueing_lock` drops a
+    # duplicate firing while one is `todo`; the advisory lock covers the `doing` case.
+    @app.periodic(cron=SWEEP_CRON, periodic_id=SWEEP_PERIODIC_ID, queueing_lock="sweep")
+    @app.task(name=SWEEP)
+    async def sweep_job(timestamp: int) -> None:
+        nonlocal skipped
+        skipped = 0 if await run_sweep(res, runs, queue) else skipped + 1
+        if skipped:
+            logger.debug("sweep skipped: another one holds the lock (%d in a row)", skipped)
+        res.observability.metrics.gauge(SWEEP_SKIPPED_METRIC, float(skipped))
+
+    @app.periodic(cron=PRUNE_CRON, periodic_id=PRUNE_PERIODIC_ID, queueing_lock="prune")
+    @app.task(name=PRUNE)
+    async def prune_job(timestamp: int) -> None:
+        await prune_threads(res, runs)
+
+    @app.task(name=FIRE_CRON)
+    async def fire_cron_job(
+        timestamp: int, flow: str, input: dict[str, object], periodic_id: str
+    ) -> None:
+        await fire_cron(
+            res, runs, queue, timestamp=timestamp, flow=flow, input=input, periodic_id=periodic_id
+        )
+
+    crons = {  # identical crons collapse into one firing
+        cron_periodic_id(name, cron): (name, cron)
+        for name, spec in res.settings.flows.items()
+        for cron in spec.crons
+    }
+    for periodic_id, (name, cron) in crons.items():
+        # A fresh kwargs dict per cron: Procrastinate writes `timestamp` into it.
+        app.periodic(
+            cron=cron.schedule,
+            periodic_id=periodic_id,
+            task_kwargs={"flow": name, "input": dict(cron.input), "periodic_id": periodic_id},
+        )(fire_cron_job)
 
 
 async def run_worker(container: RunnerResources) -> None:
     """Serve jobs until cancelled, `limits.max_active_runs` at a time (heartbeat defaults)."""
+    db = container.settings.database
+    log_connection_budget(
+        db.app_pool_max,
+        db.checkpointer_pool_max,
+        db.procrastinate_pool_max + WORKER_EXTRA_CONNECTIONS,
+    )
     app = register_tasks(container)
     await app.run_worker_async(
         concurrency=container.settings.limits.max_active_runs,
