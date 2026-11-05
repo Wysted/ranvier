@@ -1,0 +1,54 @@
+---
+id: T16
+title: execute_run: claim, stream, heartbeat, timeout, cancel
+part: 5
+wave: G
+depends_on: [T13, T14, T15, S1]
+unblocks: [T18, T19, T23, T24, T33, T35]
+owner: sa-dev-py
+reviewer: sa-review-py
+branch: task/T16-runner
+status: todo
+---
+
+## Goal
+The single place a flow runs: a DB-free `stream_graph` core plus `execute_run` that claims, heartbeats, times out, cancels and finishes a run row.
+
+## Design references
+- design.md §5 "Single runner" (steps 1-5 and the paragraph on input choice)
+- design.md §5 "Transitions" table
+- design.md §5 "Interrupts, cancellation, idempotency"
+- design.md §8 rows "Run timeout" and "Node timeout"
+- design.md §13 row "Runner"
+
+## Scope: files this task may create or edit
+- packages/core/src/graph_agent/_internal/runtime/runner.py
+- packages/core/tests/unit/runtime/test_runner.py
+- packages/core/tests/integration/runtime/test_runner.py
+Shared files (append-only, keep edits minimal to avoid merge conflicts):
+- packages/core/src/graph_agent/_internal/bootstrap.py (append only: add `flows` (FlowRegistry), `queue: RunQueue | None`; T32 appends the usage observer wiring in the same wave)
+
+## Out of scope
+- CLI commands (T17, T18)
+- HTTP/SSE layer and admission (T21, T23)
+- Procrastinate implementation of `RunQueue` (T24)
+- Usage ledger (T32), OTel spans/metrics (T33)
+- SIGTERM drain (T26 appends)
+
+## Acceptance criteria
+- [ ] `stream_graph(compiled, input_or_command, config, ctx, stream_modes, observers) -> AsyncIterator[RunEvent]`: no DB, uses `astream(..., context=RunContext, subgraphs=True, version="v2", durability=flow.durability)`, maps parts with `map_stream_part`; reused by `run --memory` (T18) and `testing.run_flow` (T19)
+- [ ] `execute_run(container, run_id)` async generator of `RunEvent`: claim (lost -> returns; busy -> typed outcome), resolve flow + version check, `stream_graph` inside `asyncio.timeout(flow.timeout_s)`, heartbeat task every `runs.heartbeat_s` that extends the lease and cancels the stream on `cancel_requested` or a lost lease, terminal write via fenced `finish`; closing the generator (client disconnect) cancels the run
+- [ ] Outcomes: success, `interrupted` (stream reports interrupts; `interrupt` event then `end`), `error` (`run_timeout`, `flow_build_failed`, `flow_version_mismatch`, `internal_error` with `retryable`), `cancelled`; the `end` event carries usage totals from observers
+- [ ] Recovery attempt input rule: `None` if the latest checkpoint already carries this `run_id` in metadata, else the original input (per S1); first attempt uses input or `Command(resume=...)`
+- [ ] `RunQueue` Protocol (`async defer(run_id, thread_id)`) defined here for T23/T24/T26
+- [ ] Tests: contract test with `InMemorySaver` and a toy flow (success, interrupt, timeout); integration test with Postgres (claim, cancel mid-run via flag, lost lease)
+- [ ] `scripts/check.sh` green
+- [ ] import-linter contracts hold
+- [ ] no emojis, no AI attribution in code or commits; conventional commits
+
+## Notes
+- design.md §5 says `execute_run` is the only way a flow runs, but §6 says `run --memory` uses no database; splitting out `stream_graph` resolves this. Mention it in the task report so design.md can say so.
+- Read `docs/spikes/S1.md` (RunControl, context without `context_schema`, `metadata.run_id`).
+- Port the stream mapping and interrupt-by-id resume from `/home/wysted/code/agintis/src/agintis/agent_kit/runtime/langgraph_runner.py`.
+- Sync/blocking work must not run on the loop (blockbuster is on in tests).
+- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
