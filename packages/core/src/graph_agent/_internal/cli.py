@@ -4,7 +4,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotations only: the heavy imports are lazy inside the handlers
+    from uuid import UUID
+
     from graph_agent._internal.config.settings import Settings
+    from graph_agent._internal.runtime.events import RunEvent
     from graph_agent._internal.usage import ReportRow
 
 type Handler = Callable[[argparse.Namespace], int]
@@ -145,3 +148,219 @@ def _add_usage(sub: SubparsersAction) -> None:
 
 
 _COMMANDS.append(_add_usage)
+
+
+# --- migrate, run -----------------------------------------------------------------------------
+
+EXIT_USAGE = 2  # argparse's own code for bad arguments
+_OK_END_STATUSES = frozenset({"success", "interrupted"})
+
+
+def _add_migrate(sub: SubparsersAction) -> None:
+    parser = sub.add_parser("migrate", help="apply the SQL migrations and set up the checkpointer")
+    parser.set_defaults(handler=_migrate)
+
+
+def _migrate(args: argparse.Namespace) -> int:
+    import asyncio
+
+    settings = _load_settings()
+    if settings is None:
+        return 1
+    asyncio.run(_migrate_database(settings))
+    return 0
+
+
+async def _migrate_database(settings: "Settings") -> None:
+    from graph_agent._internal.db.migrate import ADVISORY_LOCK_KEY, apply_migrations
+    from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
+    from graph_agent._internal.runtime.checkpointer import setup_checkpointer
+
+    db = settings.database
+    url = db.url.get_secret_value()
+    async with await open_app_pool(url, db.app_pool_max) as app_pool:
+        applied = await apply_migrations(app_pool)
+        print(f"migrations: applied {applied}" if applied else "migrations: up to date")
+        # The saver's own migrations run under the same advisory lock as ours, so concurrent
+        # `migrate` invocations cannot interleave them. `apply_migrations` takes and releases
+        # the lock inside its call; the part that must not race is the saver's setup.
+        async with (
+            await open_checkpointer_pool(url, db.checkpointer_pool_max) as cp_pool,
+            app_pool.connection() as conn,
+        ):
+            try:
+                await conn.set_autocommit(True)
+                await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+                try:
+                    await setup_checkpointer(cp_pool)
+                finally:
+                    await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+                await conn.set_autocommit(False)
+            except BaseException:
+                # Session state (lock, autocommit) is unknown: the pool must discard it.
+                await conn.close()
+                raise
+    print("checkpointer: ready")
+
+
+def _json_arg(text: str) -> object:
+    import json
+
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
+    if value is None:  # JSON null counts as absent (design: XOR input/command)
+        raise argparse.ArgumentTypeError("JSON null is not a valid value here")
+    return value
+
+
+def _add_run(sub: SubparsersAction) -> None:
+    import uuid
+
+    parser = sub.add_parser("run", help="run a flow inline and print its events as JSON lines")
+    parser.add_argument("flow", help="flow name from graph-agent.toml")
+    what = parser.add_mutually_exclusive_group(required=True)
+    what.add_argument("--input", type=_json_arg, metavar="JSON", help="input of a new run")
+    what.add_argument(
+        "--resume",
+        type=_json_arg,
+        metavar="JSON",
+        help="resume value, a map {interrupt_id: value}; needs --thread and the database",
+    )
+    parser.add_argument("--thread", type=uuid.UUID, metavar="ID", help="thread id (default: new)")
+    parser.add_argument(
+        "--memory", action="store_true", help="InMemorySaver, no database; the thread dies with us"
+    )
+    parser.set_defaults(handler=_run)
+
+
+def _emit(event: "RunEvent") -> int | None:
+    """Print one event as a JSON line; the exit code once the event is terminal, else None."""
+    from pydantic_core import to_json
+
+    from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
+
+    name = type(event).__name__.removesuffix("Event").lower()  # same names as the SSE events
+    line = to_json({"event": name, "data": event}, inf_nan_mode="null", fallback=str)
+    print(line.decode(), flush=True)
+    if isinstance(event, EndEvent):
+        return 0 if event.status in _OK_END_STATUSES else 1
+    return 1 if isinstance(event, ErrorEvent) else None
+
+
+def _run(args: argparse.Namespace) -> int:
+    import asyncio
+    import sys
+    import uuid
+
+    if args.resume is not None and (args.memory or args.thread is None):
+        print("--resume needs --thread and the database (no --memory)", file=sys.stderr)
+        return EXIT_USAGE
+    settings = _load_settings()
+    if settings is None:
+        return 1
+    thread_id: uuid.UUID = args.thread or uuid.uuid4()
+    if args.memory:
+        return asyncio.run(_run_memory(settings, args.flow, args.input, thread_id))
+    return asyncio.run(_run_database(settings, args.flow, args.input, args.resume, thread_id))
+
+
+async def _run_memory(settings: "Settings", name: str, input: object, thread_id: "UUID") -> int:
+    import asyncio
+    import logging
+    import uuid
+    from contextlib import aclosing
+
+    from graph_agent._internal.bootstrap import open_container
+    from graph_agent._internal.runtime.context import RunContext
+    from graph_agent._internal.runtime.events import ErrorEvent
+    from graph_agent._internal.runtime.runner import DEFAULT_STREAM_MODES, stream_graph
+    from graph_agent._internal.runtime.runs import ErrorCode, RunError
+
+    async with open_container(settings, memory=True) as container:
+        try:
+            flow = await container.flows.get(name)
+        except RunError as exc:
+            _emit(ErrorEvent(exc.code.value, str(exc), exc.retryable))
+            return 1
+        run_id = str(uuid.uuid4())
+        ctx = RunContext(run_id, str(thread_id), name, flow.version, 1, None)
+        stream = stream_graph(
+            flow,
+            input,
+            {
+                "configurable": {"thread_id": ctx.thread_id},
+                "metadata": {"run_id": run_id, "thread_id": ctx.thread_id},
+                "max_concurrency": flow.max_concurrency,
+            },
+            ctx,
+            DEFAULT_STREAM_MODES,
+            container.observers,
+        )
+        code = 1  # an empty stream is not a success
+        timeout = asyncio.timeout(flow.timeout_s)
+        try:
+            # stream_graph applies no timeout; the stream is closed here, in the consuming task.
+            async with timeout, aclosing(stream):
+                async for event in stream:
+                    if (done := _emit(event)) is not None:
+                        code = done
+        except Exception as exc:  # reported, never swallowed: type name only (may carry secrets)
+            if timeout.expired():
+                error = ErrorEvent(ErrorCode.RUN_TIMEOUT, f"run exceeded {flow.timeout_s}s", False)
+            else:
+                logging.getLogger(__name__).error("run %s failed", run_id, exc_info=exc)
+                error = ErrorEvent(ErrorCode.INTERNAL_ERROR, type(exc).__name__, False)
+            _emit(error)
+            return 1
+        return code
+
+
+async def _run_database(
+    settings: "Settings", name: str, input: object, resume: object, thread_id: "UUID"
+) -> int:
+    from contextlib import aclosing
+
+    from graph_agent._internal.bootstrap import open_container
+    from graph_agent._internal.runtime.events import ErrorEvent
+    from graph_agent._internal.runtime.runner import execute_run
+    from graph_agent._internal.runtime.runs import ErrorCode, Run, RunError
+
+    async with open_container(settings) as container:
+        runs = container.runs
+        if runs is None:
+            raise RuntimeError("database mode opened a container without a runs repository")
+        run: Run | None = None
+        try:
+            flow = await container.flows.get(name)
+            version = flow.version
+            if pin := await runs.thread_pin(thread_id):  # the thread's first run fixed these
+                if pin.flow != name:
+                    raise RunError(
+                        ErrorCode.INVALID_REQUEST,
+                        f"thread {thread_id} belongs to flow {pin.flow!r}",
+                    )
+                version = pin.flow_version  # execute_run rejects it if the flow moved on
+            run = await runs.create(
+                thread_id=thread_id,
+                flow=name,
+                flow_version=version,
+                input=input,
+                command=None if resume is None else {"resume": resume},
+            )
+            code = 1  # an empty stream (claim lost) is not a success
+            async with aclosing(execute_run(container, run.run_id)) as events:
+                async for event in events:
+                    if (done := _emit(event)) is not None:
+                        code = done
+            return code
+        except RunError as exc:
+            if run is not None:  # thread_busy: the pending row would stay claimable
+                await runs.request_cancel(run.run_id, run.thread_id)
+            _emit(ErrorEvent(exc.code.value, str(exc), exc.retryable))
+            return 1
+
+
+_COMMANDS.append(_add_migrate)
+_COMMANDS.append(_add_run)
