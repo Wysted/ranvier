@@ -126,7 +126,12 @@ def _usage(args: argparse.Namespace) -> int:
     if settings is None:
         return 1
     rows = asyncio.run(_fetch_usage(settings, args.since, args.by))  # only the fetch needs a loop
-    print(format_report(build_report(rows), args.by))
+    # A model name served by two providers is ambiguous: leave it unmapped (priced by name).
+    names: dict[str, set[str]] = {}
+    for profile in settings.llm.profiles.values():
+        names.setdefault(profile.model, set()).add(profile.provider)
+    providers = {model: next(iter(p)) for model, p in names.items() if len(p) == 1}
+    print(format_report(build_report(rows, providers), args.by))
     return 0
 
 

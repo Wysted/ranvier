@@ -1,17 +1,20 @@
-import asyncio
+import argparse
+import threading
+import time
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
+import genai_prices
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, LLMResult
 
-from graph_agent._internal import usage as usage_module
-from graph_agent._internal.cli import USAGE_GROUP_BYS
+from graph_agent._internal.cli import USAGE_GROUP_BYS, _parse_since
 from graph_agent._internal.runtime.context import RunContext
 from graph_agent._internal.runtime.events import RunObserver, RunOutcome, UsageTotals
 from graph_agent._internal.usage import (
@@ -78,12 +81,36 @@ async def test_failed_call_counts_as_call_without_tokens() -> None:
     assert cb.snapshot() == {("m", ""): Counts(calls=1)}
 
 
-async def test_concurrent_calls_do_not_lose_counts() -> None:
+async def test_concurrent_calls_do_not_lose_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow_add(self: Counts, other: Counts) -> None:
+        calls = self.calls
+        time.sleep(0)  # yield mid read-modify-write: only the callback's lock keeps it atomic
+        self.calls = calls + other.calls
+
+    monkeypatch.setattr(Counts, "add", slow_add)
+    threads, calls = 8, 200
     cb = UsageCallback()
     result = _result(input_tokens=1, output_tokens=1, total_tokens=2)
-    await asyncio.gather(*(_call(cb, "m", "a", result) for _ in range(200)))
-    await asyncio.to_thread(lambda: asyncio.run(_call(cb, "m", "a", result)))
-    assert cb.snapshot()[("m", "a")].calls == 201
+    barrier = threading.Barrier(threads)
+
+    def worker() -> None:
+        barrier.wait()
+        for _ in range(calls):
+            run_id = uuid.uuid4()
+            # The handlers are `async def` without awaits: drive them to completion by hand.
+            for coro in (
+                cb.on_chat_model_start({}, [], run_id=run_id, metadata={"ls_model_name": "m"}),
+                cb.on_llm_end(result, run_id=run_id),
+            ):
+                with pytest.raises(StopIteration):
+                    coro.send(None)
+
+    workers = [threading.Thread(target=worker) for _ in range(threads)]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join()
+    assert cb.snapshot()[("m", "")].calls == threads * calls
 
 
 async def test_real_chat_model_reports_to_callback() -> None:
@@ -152,9 +179,46 @@ def test_report_prices_known_models_and_never_zeroes_unknown() -> None:
 
 
 def test_report_survives_a_price_lookup_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(*args: object) -> object:
+    def boom(*args: object, **kwargs: object) -> object:
         raise ValueError("bad usage")
 
-    monkeypatch.setattr(usage_module, "calc_price", boom)
+    monkeypatch.setattr(genai_prices, "calc_price", boom)
     (line,) = build_report([ReportRow("f", "gpt-5.4-mini", 1, 1, 0, 1)])
     assert not line.priced and line.unpriced_models == {"gpt-5.4-mini"}
+
+
+def test_local_models_are_unpriced_and_known_ones_use_their_provider() -> None:
+    rows = [
+        ReportRow("f", "deepseek-r1:8b", 1000, 100, 0, 1),
+        ReportRow("f", "gpt-5.4-mini", 1000, 0, 0, 1),
+    ]
+    (line,) = build_report(rows, {"deepseek-r1:8b": "ollama", "gpt-5.4-mini": "openai"})
+    assert line.unpriced_models == {"deepseek-r1:8b"}
+    assert line.priced and 0 < line.cost_usd < Decimal("0.01")
+    (by_name,) = build_report(rows[:1])  # unmapped: old behaviour, matched by name
+    assert by_name.priced
+
+
+@pytest.mark.parametrize(
+    ("text", "delta"), [("24h", timedelta(hours=24)), ("7d", timedelta(days=7))]
+)
+def test_parse_since_relative(text: str, delta: timedelta) -> None:
+    assert abs(datetime.now(UTC) - delta - _parse_since(text)) < timedelta(seconds=5)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("2026-01-02", datetime(2026, 1, 2, tzinfo=UTC)),
+        ("2026-01-02T03:04:05", datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)),
+        ("2026-01-02T03:00:00+02:00", datetime(2026, 1, 2, 1, tzinfo=UTC)),
+    ],
+)
+def test_parse_since_iso(text: str, expected: datetime) -> None:
+    assert _parse_since(text) == expected
+
+
+@pytest.mark.parametrize("text", ["", "d", "7x", "-1d", "yesterday"])
+def test_parse_since_rejects_garbage(text: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="use 24h, 7d or an ISO date"):
+        _parse_since(text)

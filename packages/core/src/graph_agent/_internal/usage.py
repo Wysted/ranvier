@@ -17,7 +17,6 @@ from decimal import Decimal
 from typing import Any, Final, LiteralString, Protocol
 from uuid import UUID
 
-from genai_prices import Usage, calc_price
 from langchain_core.callbacks import AsyncCallbackHandler, BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
@@ -161,13 +160,13 @@ ON CONFLICT (run_id, model, agent) DO UPDATE SET
 # One full query per `--by` (fixed SQL, never built from user input).
 _REPORT_SQL: Final[dict[str, LiteralString]] = {
     by: f"""
-        SELECT {column} AS grp, model,
+        SELECT {by} AS grp, model,
                sum(input_tokens)::bigint AS i, sum(output_tokens)::bigint AS o,
                sum(cached_input_tokens)::bigint AS c, sum(calls)::bigint AS n
         FROM graph_agent.usage WHERE created_at >= %s
         GROUP BY 1, 2 ORDER BY 1, 2
     """
-    for by, column in (("flow", "flow"), ("model", "model"), ("agent", "agent"))
+    for by in ("flow", "model", "agent")
 }
 GROUP_BYS: Final = tuple(_REPORT_SQL)
 
@@ -210,14 +209,14 @@ class UsageRepository:
                 c.reasoning_tokens,
                 c.calls,
             )
-            for (model, agent), c in sorted(
-                usage.items(), key=lambda item: item[0]
-            )  # stable lock order
+            for (model, agent), c in sorted(usage.items())  # stable lock order
         ]
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.executemany(_UPSERT, params)
 
     async def report_rows(self, since: datetime, by: str) -> list[ReportRow]:
+        """Rows since `since` (by `created_at`, the first attempt's date: tokens a run recovered
+        on a later day adds land on its old row)."""
         async with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(_REPORT_SQL[by], (since,))
             return [
@@ -255,21 +254,37 @@ class ReportLine:
     unpriced_models: set[str] = field(default_factory=set)
 
 
-def _price(row: ReportRow) -> Decimal | None:
-    """Estimated USD at today's prices; None when genai-prices cannot price the model."""
+LOCAL_PROVIDERS: Final = frozenset({"ollama"})  # no per-token price
+
+
+def _price(row: ReportRow, provider: str | None) -> Decimal | None:
+    """Estimated USD at today's prices; None for local models or ones genai-prices can't price.
+
+    shortcut: the ledger stores no provider, so it comes from today's LLM profiles (model ->
+    provider); an unmapped model is priced by name across providers. Add a provider column
+    if profiles change or the same model name is served by several providers.
+    """
+    if provider in LOCAL_PROVIDERS:
+        return None
+    from genai_prices import Usage, calc_price  # lazy: ~100 ms, only the CLI report needs it
+
     usage = Usage(
         input_tokens=row.input_tokens,
         cache_read_tokens=row.cached_input_tokens,
         output_tokens=row.output_tokens,
     )
     try:
-        return calc_price(usage, row.model).total_price
+        return calc_price(usage, row.model, provider_id=provider).total_price
     except (LookupError, ValueError):  # unknown model, or a usage the model's price cannot take
         return None
 
 
-def build_report(rows: Iterable[ReportRow]) -> list[ReportLine]:
+def build_report(
+    rows: Iterable[ReportRow], providers: Mapping[str, str] | None = None
+) -> list[ReportLine]:
     """Sum rows per group; unpriceable models are listed and never counted as $0.
+
+    `providers` maps model name to provider id (see `_price`).
 
     shortcut: a row that mixes calls with and without usage counts all its calls as with usage
     (the ledger sums per `(run, model, agent)`); split the column if that matters.
@@ -284,7 +299,7 @@ def build_report(rows: Iterable[ReportRow]) -> list[ReportLine]:
         line.output_tokens += row.output_tokens
         line.cached_input_tokens += row.cached_input_tokens
         line.calls += row.calls
-        cost = _price(row)
+        cost = _price(row, (providers or {}).get(row.model))
         if cost is None:
             line.unpriced_models.add(row.model)
         else:
