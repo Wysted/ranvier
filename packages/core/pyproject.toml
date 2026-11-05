@@ -51,6 +51,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "mcp".msg = "MCP SDK is confined to graph_agent/_internal/agents/mcp.py (design section 2)."
+"mcp_types".msg = "MCP wire types are confined to graph_agent/_internal/agents/mcp.py (design section 2)."
 "httpx2".msg = "httpx2 is confined to graph_agent/_internal/agents/mcp.py and llm.py (design section 2)."
 "langchain.mcp".msg = "Use the McpToolSource port; langchain.mcp is banned."
 "fastmcp".msg = "fastmcp is banned (design section 2)."
