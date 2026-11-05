@@ -9,20 +9,18 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
-import psycopg
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from procrastinate.schema import SchemaManager
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
 from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
-from graph_agent._internal.db.migrate import apply_migrations
+from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
 from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
-from graph_agent._internal.queue import ProcrastinateRunQueue, make_app
+from graph_agent._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
@@ -99,9 +97,9 @@ def settings(clean_database: str) -> Settings:  # sync: reading the TOML source 
 
 
 @pytest.fixture
-def procrastinate_schema(clean_database: str) -> None:
-    with psycopg.connect(clean_database, autocommit=True) as conn:
-        conn.execute(SchemaManager.get_schema())
+async def procrastinate_schema(pool: AsyncConnectionPool) -> None:
+    async with advisory_lock(pool) as conn:
+        await apply_procrastinate_schema(conn)
 
 
 @pytest.fixture
@@ -159,7 +157,8 @@ async def _until(pool: AsyncConnectionPool, run_id: uuid.UUID, want: RunStatus) 
 async def _jobs(pool: AsyncConnectionPool) -> list[tuple[Any, ...]]:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT status::text, attempts FROM procrastinate_jobs ORDER BY id"
+            "SELECT status::text, attempts FROM graph_agent.procrastinate_jobs "
+            "WHERE task_name = 'graph_agent.execute_run' ORDER BY id"
         )
         return await cur.fetchall()
 

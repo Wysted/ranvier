@@ -4,15 +4,20 @@
 runtime. Task names live here so both sides agree on them.
 """
 
+import asyncio
 import logging
 import uuid
-from typing import Final
+from pathlib import Path
+from typing import Any, Final
 
 from procrastinate import App, PsycopgConnector
 from procrastinate.exceptions import AlreadyEnqueued
+from procrastinate.schema import SchemaManager
+from psycopg import AsyncConnection
 
 from graph_agent._internal.config.settings import Settings
-from graph_agent._internal.db.pool import MIN_POOL_SIZE
+from graph_agent._internal.db.migrate import SCHEMA, MigrationError
+from graph_agent._internal.db.pool import MIN_POOL_SIZE, PIN_SEARCH_PATH, with_options
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,9 @@ def make_app(settings: Settings) -> App:
         conninfo=db.url.get_secret_value(),
         min_size=MIN_POOL_SIZE,
         max_size=db.procrastinate_pool_max,
+        # Pinned like the saver's pool: the Procrastinate tables live in our schema, whatever the
+        # role is called. The LISTEN connection is built from the same kwargs.
+        kwargs={"options": with_options(db.url.get_secret_value(), PIN_SEARCH_PATH)},
     )
     return App(connector=connector)
 
@@ -61,3 +69,56 @@ class ProcrastinateRunQueue:
             await job.defer_async(run_id=str(run_id))
         except AlreadyEnqueued:
             logger.debug("run %s already has a queued job", run_id)
+
+
+PROCRASTINATE_MIGRATIONS: Final = f"{SCHEMA}.procrastinate_migrations"
+_JOBS_TABLE: Final = f"{SCHEMA}.procrastinate_jobs"
+
+
+def _read_schema_files() -> tuple[str, list[tuple[str, str]]]:
+    """`schema.sql` and the shipped migration files by name (sync file I/O)."""
+    files = sorted(Path(SchemaManager.get_migrations_path()).glob("*.sql"))
+    return SchemaManager.get_schema(), [(f.name, f.read_text(encoding="utf-8")) for f in files]
+
+
+async def _run_script(conn: AsyncConnection[tuple[Any, ...]], sql: str, record: list[str]) -> None:
+    async with conn.transaction():
+        # Transaction-scoped, so the lock connection keeps no session state (rule 1d). No params:
+        # `%` in the Procrastinate SQL needs no escaping.
+        await conn.execute(f"SET LOCAL search_path = {SCHEMA}")
+        await conn.execute(sql)
+        for name in record:
+            await conn.execute(
+                f"INSERT INTO {PROCRASTINATE_MIGRATIONS} (name) VALUES (%s)", (name,)
+            )
+
+
+async def apply_procrastinate_schema(conn: AsyncConnection[tuple[Any, ...]]) -> list[str]:
+    """Install or upgrade the Procrastinate schema in `graph_agent`; return the files recorded.
+
+    Procrastinate tracks nothing itself. A fresh database gets `schema.sql` plus every shipped
+    migration name recorded as applied; an existing one gets the shipped files not yet recorded,
+    in name order, one transaction each. The caller holds `advisory_lock` (autocommit `conn`) and
+    has applied the SQL migrations (they create the record table). Upgrading Procrastinate needs
+    the API and workers stopped first (S4).
+    """
+    schema_sql, migrations = await asyncio.to_thread(_read_schema_files)
+    cur = await conn.execute("SELECT to_regclass(%s)", (_JOBS_TABLE,))
+    row = await cur.fetchone()
+    names = [name for name, _ in migrations]
+    if row is not None and row[0] is None:
+        await _run_script(conn, schema_sql, names)
+        return names
+    cur = await conn.execute(f"SELECT name FROM {PROCRASTINATE_MIGRATIONS}")
+    applied = {r[0] for r in await cur.fetchall()}
+    if not applied:  # schema without records: which files it holds is unknown
+        raise MigrationError(f"{_JOBS_TABLE} exists but {PROCRASTINATE_MIGRATIONS} is empty")
+    if unknown := sorted(applied - set(names)):
+        raise MigrationError(f"recorded Procrastinate migrations not shipped any more: {unknown}")
+    done: list[str] = []
+    for name, sql in migrations:
+        if name not in applied:
+            await _run_script(conn, sql, [name])
+            logger.info("applied Procrastinate migration %s", name)
+            done.append(name)
+    return done

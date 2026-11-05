@@ -248,7 +248,7 @@ async def test_expired_sweep_and_exhaustion(
     await _expire_lease(pool, retry.run_id)
 
     result = await repo.expired(max_attempts=2)
-    assert result.redefer == [retry.run_id]
+    assert result.redefer == [(retry.run_id, retry.thread_id)]
     assert result.exhausted == [exhausted.run_id]
     gone = await _get(repo, exhausted)
     assert gone.status is RunStatus.ERROR
@@ -287,8 +287,8 @@ async def test_stale_pending(repo: RunsRepository, pool: AsyncConnectionPool) ->
             "UPDATE graph_agent.runs SET created_at = now() - interval '1 hour' WHERE run_id = %s",
             (old.run_id,),
         )
-    assert await repo.stale_pending(older_than_s=60) == [old.run_id]
-    assert fresh.run_id not in await repo.stale_pending(older_than_s=60)
+    assert await repo.stale_pending(older_than_s=60) == [(old.run_id, old.thread_id)]
+    assert fresh.run_id not in [r for r, _ in await repo.stale_pending(older_than_s=60)]
 
 
 async def test_delete_thread_refused_while_running(repo: RunsRepository) -> None:

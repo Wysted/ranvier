@@ -1,4 +1,5 @@
 import argparse
+import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -36,6 +37,18 @@ def _load_settings() -> "Settings | None":
         for err in exc.errors(include_input=False, include_url=False, include_context=False):
             print(f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}", file=sys.stderr)
     return None
+
+
+LOG_LEVEL = logging.INFO
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def _configure_logging() -> None:
+    """INFO to stderr for the long-running commands, unless the host already set logging up.
+
+    Only entrypoints configure logging; library code just uses `logging.getLogger`.
+    """
+    logging.basicConfig(level=LOG_LEVEL, format=LOG_FORMAT)  # no-op when root has handlers
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -164,6 +177,7 @@ def _add_migrate(sub: SubparsersAction) -> None:
 def _migrate(args: argparse.Namespace) -> int:
     import asyncio
 
+    _configure_logging()
     settings = _load_settings()
     if settings is None:
         return 1
@@ -174,6 +188,7 @@ def _migrate(args: argparse.Namespace) -> int:
 async def _migrate_database(settings: "Settings") -> None:
     from graph_agent._internal.db.migrate import advisory_lock, apply_migrations_locked
     from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
+    from graph_agent._internal.queue import apply_procrastinate_schema
     from graph_agent._internal.runtime.checkpointer import setup_checkpointer
 
     db = settings.database
@@ -188,7 +203,13 @@ async def _migrate_database(settings: "Settings") -> None:
         # The saver needs the schema (applied above) because its pool pins `search_path`.
         async with await open_checkpointer_pool(url, db.checkpointer_pool_max) as cp_pool:
             await setup_checkpointer(cp_pool)
-    print("checkpointer: ready")
+        print("checkpointer: ready")
+        recorded = await apply_procrastinate_schema(conn)
+        print(
+            f"procrastinate: recorded {len(recorded)} file(s)"
+            if recorded
+            else "procrastinate: up to date"
+        )
 
 
 def _json_arg(text: str) -> object:
@@ -293,7 +314,6 @@ def _run(args: argparse.Namespace) -> int:
 
 async def _run_memory(settings: "Settings", name: str, input: object, thread_id: "UUID") -> int:
     import asyncio
-    import logging
     import uuid
     from contextlib import aclosing
 
@@ -394,11 +414,12 @@ _COMMANDS.append(_add_run)
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    _configure_logging()
     settings = _load_settings()  # validates up front with readable errors
     if settings is None:
         return 1
-    # cli and api are sibling layers (C1): uvicorn imports the factory by name, which loads the
-    # same Settings() again inside the server process.
+    # cli sits above api (C1) but names the factory as a string: uvicorn imports it, which loads
+    # the same Settings() again inside the server process.
     uvicorn.run(
         "graph_agent._internal.api.app:app_from_env",
         factory=True,
@@ -414,3 +435,69 @@ def _add_serve(sub: SubparsersAction) -> None:
 
 
 _COMMANDS.append(_add_serve)
+
+
+# --- worker, crons -----------------------------------------------------------------------------
+
+
+def _add_worker(sub: SubparsersAction) -> None:
+    parser = sub.add_parser("worker", help="Procrastinate worker: execute, sweep, prune, crons")
+    parser.set_defaults(handler=_worker)
+
+
+def _worker(args: argparse.Namespace) -> int:
+    import asyncio
+    import sys
+
+    from graph_agent._internal.llm import LlmError
+
+    _configure_logging()
+    settings = _load_settings()
+    if settings is None:
+        return 1
+    try:
+        asyncio.run(_serve_jobs(settings))
+    except LlmError as exc:  # startup config error, like `run`: one line, no traceback
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+async def _serve_jobs(settings: "Settings") -> None:
+    from graph_agent._internal.bootstrap import open_container
+    from graph_agent._internal.worker import WORKER_EXTRA_CONNECTIONS, run_worker
+
+    async with open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container:
+        await run_worker(container)
+
+
+def _add_crons(sub: SubparsersAction) -> None:
+    parser = sub.add_parser("crons", help="list the declared crons with their next fire time (UTC)")
+    parser.set_defaults(handler=_crons)
+
+
+def _crons(args: argparse.Namespace) -> int:
+    from graph_agent._internal.config.manifest import next_fire
+
+    settings = _load_settings()
+    if settings is None:
+        return 1
+    now = datetime.now(UTC)
+    rows = [
+        (flow, cron.schedule, next_fire(cron.schedule, now).strftime("%Y-%m-%d %H:%M:%S UTC"))
+        for flow, spec in settings.flows.items()
+        for cron in spec.crons
+    ]
+    if not rows:
+        print("no crons declared")
+        return 0
+    widths = [max(len(col) for col in column) for column in zip(*rows, strict=True)]
+    for row in rows:
+        print(
+            "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
+        )
+    return 0
+
+
+_COMMANDS.append(_add_worker)
+_COMMANDS.append(_add_crons)

@@ -5,6 +5,8 @@ closes one. Checkpoint writes are not atomic with the app's UnitOfWork (design s
 """
 
 import asyncio
+import uuid
+from collections.abc import Sequence
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -45,3 +47,14 @@ async def setup_checkpointer(pool: CheckpointerPool) -> None:
     setup runs `CREATE INDEX CONCURRENTLY`.
     """
     await create_checkpointer(pool).setup()
+
+
+async def prune_checkpoints(saver: Checkpointer, thread_ids: Sequence[uuid.UUID]) -> None:
+    """`keep_latest` for the threads: the newest checkpoint stays, so a resume still works.
+
+    Postgres only (`InMemorySaver` has no `aprune`). A long prune holds one permit of the saver's
+    semaphore; never call it from inside the saver's own `alist` iteration.
+    """
+    if not isinstance(saver, PooledPostgresSaver):
+        raise TypeError("pruning needs the Postgres checkpointer")
+    await saver.aprune([str(t) for t in thread_ids], strategy="keep_latest")

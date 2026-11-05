@@ -85,8 +85,14 @@ class Container:
 
 
 @asynccontextmanager
-async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIterator[Container]:
-    """Open every resource; closing is the exact reverse and also runs when startup fails."""
+async def open_container(
+    settings: Settings, *, memory: bool = False, extra_connections: int = 0
+) -> AsyncIterator[Container]:
+    """Open every resource; closing is the exact reverse and also runs when startup fails.
+
+    `extra_connections`: connections the entrypoint holds outside the pools (the worker's), only
+    counted in the logged connection budget.
+    """
     async with AsyncExitStack() as stack:
         loop = asyncio.get_running_loop()
         # First in, last out: later teardown steps (observability flush) still use to_thread.
@@ -108,7 +114,9 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
         else:
             db = settings.database
             log_connection_budget(
-                db.app_pool_max, db.checkpointer_pool_max, db.procrastinate_pool_max
+                db.app_pool_max,
+                db.checkpointer_pool_max,
+                db.procrastinate_pool_max + extra_connections,
             )
             url = db.url.get_secret_value()
             app_pool = await open_app_pool(url, db.app_pool_max)

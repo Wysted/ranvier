@@ -110,7 +110,7 @@ graph_agent/
 
 | # | Contract | Rule |
 |---|----------|------|
-| C1 | Layers | `cli \| api \| worker` > `bootstrap` > `runtime` > `agents` > `llm \| limits \| usage \| observability \| queue` > `db \| config` (siblings independent) |
+| C1 | Layers | `cli` > `api \| worker` > `bootstrap` > `runtime` > `agents` > `llm \| limits \| usage \| observability \| queue` > `db \| config` (siblings independent) |
 | C2 | Facade direction | `graph_agent._internal` never imports `graph_agent.testing`; examples and starter forbid `graph_agent._internal` |
 | C3 | Web stays at the edge | `fastapi`, `starlette` only in `api`; `uvicorn` only in `api` and `cli` |
 | C4 | Queue stays at the edge | `procrastinate` only in `queue` and `worker` |

@@ -95,9 +95,10 @@ include_external_packages = true
 name = "C1 layers"
 type = "layers"
 containers = ["graph_agent._internal"]
-# Parenthesized layers do not exist yet (worker/queue land later).
+# Parenthesized layers do not exist yet. cli sits above api and worker: it starts the worker (T25).
 layers = [
-    "cli | api | (worker)",
+    "cli",
+    "api | worker",
     "bootstrap",
     "runtime",
     "agents",
