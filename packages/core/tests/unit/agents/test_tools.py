@@ -1,10 +1,12 @@
 import asyncio
+import gc
 import os
 import sys
 import textwrap
 import threading
 import time
 import types
+import weakref
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Any
@@ -209,6 +211,20 @@ async def test_thread_isolation_runs_off_loop_and_get_caches(tools_module: str) 
     msg = await wrapped.ainvoke(_tool_call("sync_only", x=1))
     assert msg.status == "success"
     assert msg.content != threading.current_thread().name
+
+
+def test_tool_objects_are_not_kept_alive_by_the_registry() -> None:
+    async def noop(x: int) -> int:
+        return x
+
+    reg = _registry()
+    probe = StructuredTool.from_function(coroutine=noop, name="probe", description="d")
+    ref = weakref.ref(probe)
+    for _ in range(3):  # repeated (failed) builds resolve the same object again
+        reg.resolve([probe])
+    del probe
+    gc.collect()
+    assert ref() is None
 
 
 def test_unknown_tool_fails_loudly() -> None:

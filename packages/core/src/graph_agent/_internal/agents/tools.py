@@ -176,8 +176,6 @@ class ToolRegistry:
         self._limits = limits
         self._cpu_pool = cpu_pool
         self._by_name: dict[str, BaseTool] = {}
-        # Keeps the source object alive so id() stays unique; objects are wrapped once too.
-        self._by_object: dict[int, tuple[BaseTool, BaseTool]] = {}
         # `get` may run in a worker thread (first resolution imports user modules).
         self._lock = threading.Lock()
 
@@ -211,19 +209,15 @@ class ToolRegistry:
             if isinstance(item, str):
                 out.append(self.get(item))
                 continue
-            with self._lock:
-                cached = self._by_object.get(id(item))
-                if cached is None:
-                    cached = (
-                        item,
-                        self._wrap(
-                            f"tool object {item.name!r}",
-                            item,
-                            isolation=self._object_isolation.get(id(item), "async"),
-                        ),
-                    )
-                    self._by_object[id(item)] = cached
-            out.append(cached[1])
+            # Not cached: a registry-lifetime cache keyed by id() leaked one entry (holding the
+            # tool, e.g. a compiled subagent) per failed build. Objects are wrapped per resolve.
+            out.append(
+                self._wrap(
+                    f"tool object {item.name!r}",
+                    item,
+                    isolation=self._object_isolation.get(id(item), "async"),
+                )
+            )
         return out
 
     def _wrap(
