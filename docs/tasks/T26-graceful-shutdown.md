@@ -45,3 +45,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - If S1 shows `RunControl` is unusable in the installed langgraph, stop and report; do not invent a different mechanism.
 - Depends on T23/T24, so the API and worker entry points exist; touch them minimally.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T10 review (orchestrator): `Observability.shutdown()` blocks (up to ~2x10 s with the collector down): call it via `asyncio.to_thread` and count it inside `limits.shutdown_grace_s`.

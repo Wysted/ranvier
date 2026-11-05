@@ -48,3 +48,4 @@ Shared files: none.
 - Constructors take collaborators explicitly; no module-level globals.
 - Metrics gauge sources (loop lag, executor occupancy, pool stats, semaphore waiters) are registered with the metrics handle here as callables; T33 only adds runner-level metrics.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T10 review (orchestrator): `Observability.shutdown()` blocks (up to ~2x10 s with the collector down): call it via `asyncio.to_thread` and count it inside `limits.shutdown_grace_s`.
