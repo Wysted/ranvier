@@ -52,3 +52,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - tasks.md does not make T23 depend on T24, but background runs need a queue; the `RunQueue` Protocol from T16 is the seam.
 - `fastapi`/`starlette` only here (C3); `uvicorn` only here and in `cli`.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- From the T22 review (orchestrator): `create_app` must set `app.state.authenticator = build_authenticator(settings.api)` in the lifespan (otherwise every route 500s); re-export `Principal` and `AuthError` from `graph_agent/__init__.py` (append-only shared file); `serve` host/port overrides must go through the same settings object before `build_authenticator` so the loopback rule cannot be bypassed.

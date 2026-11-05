@@ -120,11 +120,14 @@ Ruff `banned-api` (import-linter cannot target external subpackages): `mcp` and 
 
 ## 3. Public API
 
-Everything users import lives in `graph_agent` and `graph_agent.testing`. Anything under `_internal` may change in any release.
+Everything users import lives in `graph_agent` and `graph_agent.testing`. Anything under `_internal` may change in any release. Every type a user returns or raises from a declared extension point (auth hook, flow factory) is exported here.
 
 ```python
 # graph_agent/__init__.py
-__all__ = ["AgentSpec", "FlowContext", "RunContext", "as_tool", "__version__"]
+__all__ = ["AgentSpec", "AuthError", "FlowContext", "Principal", "RunContext", "as_tool", "__version__"]
+
+# Principal(subject, tenant_id) and AuthError are re-exported from _internal.api.auth:
+# an auth hook ("module:callable") returns a Principal or raises AuthError (-> 401).
 
 @dataclass(frozen=True, slots=True)
 class RunContext:                  # LangGraph Runtime.context of every run; data only, not persisted
