@@ -8,7 +8,7 @@ unblocks: [T15, T30, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T27-agent-spec-tools
-status: todo
+status: done
 ---
 
 ## Goal

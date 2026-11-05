@@ -8,7 +8,7 @@ unblocks: [T15, T30, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T29-mcp-adapter
-status: todo
+status: done
 ---
 
 ## Goal

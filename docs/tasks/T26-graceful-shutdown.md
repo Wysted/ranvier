@@ -34,7 +34,7 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 
 ## Acceptance criteria
 - [ ] SIGTERM (or lifespan/worker shutdown): `stop_admission()` first; new inline runs get 503/429-style refusal with the standard error body
-- [ ] Every active run gets `RunControl.request_drain()` (import and usage exactly as S1 documents); when `GraphDrained` arrives the row goes back to `pending` (`attempt` unchanged by the requeue itself) and is deferred again; runs exceeding `limits.shutdown_grace_s` are left to the lease-expiry sweep
+- [ ] Every active run gets `RunControl.request_drain()` (import and usage exactly as S1 documents); when `GraphDrained` arrives the runner calls `runs.release_for_drain` (lease expired now, attempt given back, token rotated; status stays `running`) and defers the job again; runs exceeding `limits.shutdown_grace_s` are left to the lease-expiry sweep
 - [ ] uvicorn `timeout_graceful_shutdown` and Procrastinate `shutdown_graceful_timeout` are set from `limits.shutdown_grace_s`; a warning is logged at startup if it is smaller than the longest flow `timeout_s` or node timeout
 - [ ] Integration test: start a slow multi-step flow, trigger shutdown, assert the run's lease is released (expired, attempt given back, token rotated), resumable from its checkpoint, and not executed twice
 - [ ] `scripts/check.sh` green
