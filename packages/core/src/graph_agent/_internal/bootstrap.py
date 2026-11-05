@@ -105,12 +105,17 @@ class Container:
 
 @asynccontextmanager
 async def open_container(
-    settings: Settings, *, memory: bool = False, extra_connections: int = 0
+    settings: Settings,
+    *,
+    memory: bool = False,
+    extra_connections: int = 0,
+    queue_pool_max: int | None = None,
 ) -> AsyncIterator[Container]:
     """Open every resource; closing is the exact reverse and also runs when startup fails.
 
     `extra_connections`: connections the entrypoint holds outside the pools (the worker's), only
-    counted in the logged connection budget.
+    counted in the logged connection budget. `queue_pool_max` overrides the Procrastinate pool
+    size (the API passes `API_QUEUE_POOL_MAX`: it only defers).
     """
     async with AsyncExitStack() as stack:
         loop = asyncio.get_running_loop()
@@ -133,10 +138,11 @@ async def open_container(
             checkpointer: Checkpointer = create_memory_checkpointer()
         else:
             db = settings.database
+            queue_pool_max = queue_pool_max or db.procrastinate_pool_max
             log_connection_budget(
                 db.app_pool_max,
                 db.checkpointer_pool_max,
-                db.procrastinate_pool_max + extra_connections,
+                queue_pool_max + extra_connections,
             )
             url = db.url.get_secret_value()
             app_pool = await open_app_pool(url, db.app_pool_max)
@@ -144,7 +150,7 @@ async def open_container(
             runs = RunsRepository(app_pool)  # the pool owns the connections: no teardown
             cp_pool = await open_checkpointer_pool(url, db.checkpointer_pool_max)
             stack.push_async_callback(cp_pool.close)
-            queue_app = make_app(settings)
+            queue_app = make_app(settings, queue_pool_max)
             await stack.enter_async_context(queue_app.open_async())
             queue = ProcrastinateRunQueue(queue_app)
             for label, pool in (("app", app_pool), ("checkpointer", cp_pool)):
@@ -188,8 +194,8 @@ async def open_container(
         gauges |= {
             "active_attempts": lambda: len(active_runs),
             "loop_lag_ms": lambda: sampler.current_ms,
-            "active_runs": lambda: limits.active_runs,
-            "admission_waiters": lambda: limits.waiters,
+            "inline_runs": lambda: limits.active_runs,
+            "inline_admission_waiters": lambda: limits.waiters,
             "cpu_free_slots": lambda: cpu_pool.free_slots,
             # shortcut: private ThreadPoolExecutor._work_queue (queued, not busy, threads);
             # replace with an own counter if occupancy itself is needed.

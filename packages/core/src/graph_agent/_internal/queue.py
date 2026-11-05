@@ -29,8 +29,12 @@ NORMAL_PRIORITY: Final = 0  # Procrastinate's default
 RECOVERY_PRIORITY: Final = 1
 
 
-def make_app(settings: Settings) -> App:
-    """A Procrastinate app with its own pool (`database.procrastinate_pool_max`).
+# The API process only defers jobs (one INSERT each): one connection is enough.
+API_QUEUE_POOL_MAX: Final = 1
+
+
+def make_app(settings: Settings, pool_max: int | None = None) -> App:
+    """A Procrastinate app with its own pool (`pool_max` or `database.procrastinate_pool_max`).
 
     The caller opens it (`async with app.open_async()`). Workers register their tasks on the
     same app (`worker.register_tasks`); the API only defers by name.
@@ -39,7 +43,7 @@ def make_app(settings: Settings) -> App:
     connector = PsycopgConnector(
         conninfo=db.url.get_secret_value(),
         min_size=MIN_POOL_SIZE,
-        max_size=db.procrastinate_pool_max,
+        max_size=pool_max or db.procrastinate_pool_max,
         # Pinned like the saver's pool: the Procrastinate tables live in our schema, whatever the
         # role is called. The LISTEN connection is built from the same kwargs.
         kwargs={"options": with_options(db.url.get_secret_value(), PIN_SEARCH_PATH)},
