@@ -8,7 +8,7 @@ unblocks: [T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T26-graceful-shutdown
-status: todo
+status: done
 ---
 
 ## Goal
