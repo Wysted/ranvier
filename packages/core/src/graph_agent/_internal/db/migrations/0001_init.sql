@@ -42,6 +42,10 @@ CREATE INDEX runs_thread_created_idx ON graph_agent.runs (thread_id, created_at 
 CREATE INDEX runs_running_lease_idx
     ON graph_agent.runs (lease_expires_at) WHERE status = 'running';
 
+-- Pending sweep: runs whose job was never deferred (crash between insert and defer).
+CREATE INDEX runs_pending_created_idx
+    ON graph_agent.runs (created_at) WHERE status = 'pending';
+
 -- No foreign key to runs on purpose: the ledger outlives thread (and run) deletion.
 CREATE TABLE graph_agent.usage (
     run_id               uuid NOT NULL,

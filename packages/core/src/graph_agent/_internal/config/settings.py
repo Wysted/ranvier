@@ -55,6 +55,7 @@ DEFAULT_LOOP_LAG_READY_MS = 1000  # 10x the warn threshold: a loop this late is 
 DEFAULT_HEARTBEAT_S = 15  # cancel_requested is noticed within this delay; cheap one-row update
 LEASE_MIN_HEARTBEATS = 2  # lease must span at least this many heartbeats
 DEFAULT_LEASE_S = 60  # 4 heartbeats: tolerates missed beats before the orphan sweep reclaims
+DEFAULT_PENDING_REDEFER_S = 2 * DEFAULT_HEARTBEAT_S  # a healthy defer lands in ms; avoids racing it
 DEFAULT_MAX_ATTEMPTS = 3  # first try plus two recoveries before orphan_retries_exhausted
 DEFAULT_THREAD_TTL_DAYS = 30  # idle threads get keep_latest pruning after a month
 DEFAULT_THREAD_DELETE_AFTER_DAYS = 180  # second TTL: whole thread deleted after six months idle
@@ -114,6 +115,7 @@ class RunsSettings(BaseModel):
     heartbeat_s: float = Field(default=DEFAULT_HEARTBEAT_S, gt=0)
     lease_s: float = Field(default=DEFAULT_LEASE_S, gt=0)
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
+    pending_redefer_s: float = Field(default=DEFAULT_PENDING_REDEFER_S, gt=0)
 
     @model_validator(mode="after")
     def _lease_outlives_heartbeat(self) -> Self:
