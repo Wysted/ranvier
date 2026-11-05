@@ -8,7 +8,7 @@ unblocks: [T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T18-cli-migrate-run
-status: todo
+status: done
 ---
 
 ## Goal
