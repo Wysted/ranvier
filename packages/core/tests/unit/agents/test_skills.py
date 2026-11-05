@@ -1,12 +1,15 @@
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from fake_models import FakeToolModel
 from graph_agent._internal.agents.skills import SkillError, SkillsMiddleware, load_skills
 
 FIXTURES = Path(__file__).parent / "skills_fixtures"
@@ -106,3 +109,45 @@ def test_no_skills_is_a_noop(tmp_path: Path) -> None:
     mw.wrap_model_call(_request("Be brief."), _capture(seen))
     assert seen[0].system_prompt == "Be brief."
     assert mw.tools == []
+
+
+def test_system_message_content_blocks_are_preserved() -> None:
+    blocks: list[str | dict[Any, Any]] = [
+        {"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral"}}
+    ]
+    request = _request(None).override(system_message=SystemMessage(content=blocks))
+    seen: list[ModelRequest[Any]] = []
+    SkillsMiddleware([FIXTURES]).wrap_model_call(request, _capture(seen))
+    assert seen[0].system_message is not None
+    first, second = seen[0].system_message.content_blocks[:2]
+    assert first.get("cache_control") == {"type": "ephemeral"}
+    assert str(second.get("text")).startswith("\n\n## Skills")
+
+
+async def test_awrap_model_call_injects_prompt() -> None:
+    seen: list[ModelRequest[Any]] = []
+
+    async def handler(req: ModelRequest[Any]) -> ModelResponse[Any]:
+        seen.append(req)
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    mw = await asyncio.to_thread(SkillsMiddleware, [FIXTURES])
+    await mw.awrap_model_call(_request("Be brief."), handler)
+    assert (seen[0].system_prompt or "").startswith("Be brief.\n\n## Skills")
+
+
+async def test_end_to_end_through_create_agent() -> None:
+    seen: list[str] = []
+
+    class Recording(FakeToolModel):
+        def _generate(self, messages: list[Any], *args: Any, **kwargs: Any) -> Any:
+            seen.append(messages[0].text)
+            return super()._generate(messages, *args, **kwargs)
+
+    agent = create_agent(
+        Recording(messages=iter([AIMessage(content="ok")])),
+        system_prompt="Be brief.",
+        middleware=[await asyncio.to_thread(SkillsMiddleware, [FIXTURES])],
+    )
+    await agent.ainvoke({"messages": [HumanMessage("hi")]})
+    assert seen[0].startswith("Be brief.\n\n## Skills")

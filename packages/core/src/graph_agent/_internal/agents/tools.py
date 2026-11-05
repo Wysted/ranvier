@@ -18,6 +18,7 @@ import asyncio
 import contextvars
 import functools
 import logging
+import threading
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 MAX_ERROR_CHARS = 200
 POOL_GRACE = 2
 Isolation = Literal["async", "thread", "process"]
+# A tool carrying this metadata key sets its own timeout; None means "no per-tool timeout".
+TOOL_TIMEOUT_METADATA_KEY = "graph_agent_tool_timeout_s"
 
 
 class ToolConfigError(ValueError):
@@ -71,7 +74,7 @@ def _is_tool_call(tool_input: Any) -> bool:
 
 class _LimitedTool(BaseTool):
     inner: BaseTool
-    timeout_s: float
+    timeout_s: float | None
     isolation: Isolation
     target: str | None = None
     _sem: asyncio.Semaphore = PrivateAttr()
@@ -81,7 +84,7 @@ class _LimitedTool(BaseTool):
         self,
         inner: BaseTool,
         *,
-        timeout_s: float,
+        timeout_s: float | None,
         max_concurrency: int,
         isolation: Isolation,
         target: str | None,
@@ -126,6 +129,7 @@ class _LimitedTool(BaseTool):
                     release = False
                     return await asyncio.shield(fut)
                 assert self._cpu_pool is not None and self.target is not None
+                assert self.timeout_s is not None  # `_wrap` rejects it for process
                 # the pool's own timeout is a backstop, so ours always fires first
                 return await self._cpu_pool.run(
                     _run_in_child, self.target, input, timeout_s=self.timeout_s * POOL_GRACE
@@ -171,8 +175,14 @@ class ToolRegistry:
         self._by_name: dict[str, BaseTool] = {}
         # Keeps the source object alive so id() stays unique; objects are wrapped once too.
         self._by_object: dict[int, tuple[BaseTool, BaseTool]] = {}
+        # `get` may run in a worker thread (first resolution imports user modules).
+        self._lock = threading.Lock()
 
     def get(self, name: str) -> BaseTool:
+        with self._lock:
+            return self._get(name)
+
+    def _get(self, name: str) -> BaseTool:
         if (wrapped := self._by_name.get(name)) is not None:
             return wrapped
         spec = self._settings.get(name)
@@ -198,10 +208,11 @@ class ToolRegistry:
             if isinstance(item, str):
                 out.append(self.get(item))
                 continue
-            cached = self._by_object.get(id(item))
-            if cached is None:
-                cached = (item, self._wrap(f"tool object {item.name!r}", item))
-                self._by_object[id(item)] = cached
+            with self._lock:
+                cached = self._by_object.get(id(item))
+                if cached is None:
+                    cached = (item, self._wrap(f"tool object {item.name!r}", item))
+                    self._by_object[id(item)] = cached
             out.append(cached[1])
         return out
 
@@ -223,9 +234,14 @@ class ToolRegistry:
             raise ToolConfigError(f"{key}: an async-only tool cannot use isolation = 'thread'")
         if isolation == "process" and (target is None or self._cpu_pool is None):
             raise ToolConfigError(f"{key}: 'process' needs a manifest tool and a CPU pool")
+        meta = tool.metadata or {}
+        if TOOL_TIMEOUT_METADATA_KEY in meta:
+            timeout_s = meta[TOOL_TIMEOUT_METADATA_KEY]
+        else:
+            timeout_s = timeout_s or self._limits.tool_timeout_s
         return _LimitedTool(
             tool,
-            timeout_s=timeout_s or self._limits.tool_timeout_s,
+            timeout_s=timeout_s,
             max_concurrency=max_concurrency,
             isolation=isolation,
             target=target,

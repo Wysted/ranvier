@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 ATTR_FLOW = "graph_agent.flow"
 ATTR_RUN_ID = "graph_agent.run_id"
 ATTR_THREAD_ID = "graph_agent.thread_id"
+# Callback metadata key carrying AgentSpec.name; the usage ledger reads it (S3).
+AGENT_METADATA_KEY = "graph_agent_agent"
 
 OTEL_EXTRA = "otel"
 _OTEL_PACKAGES = frozenset({"opentelemetry", "openinference"})
