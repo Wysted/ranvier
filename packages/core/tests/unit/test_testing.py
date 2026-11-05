@@ -63,7 +63,7 @@ async def test_interrupt_resume_shares_the_thread() -> None:
 
 async def test_resume_by_id_map_and_errors() -> None:
     ctx = flow_context()
-    with pytest.raises(ValueError, match="no pending interrupt"):
+    with pytest.raises(ValueError, match="exactly one pending interrupt"):
         await run_flow(_asking(), ctx=ctx, thread_id="none", resume="x")
 
     first = await run_flow(_asking(), {}, ctx=ctx, thread_id="t2")
@@ -71,6 +71,14 @@ async def test_resume_by_id_map_and_errors() -> None:
         _asking(), ctx=ctx, thread_id="t2", resume={first.interrupts[0].id: "bob"}
     )
     assert result.values == {"answer": "bob"}
+
+
+async def test_resume_map_with_empty_or_foreign_ids_is_rejected() -> None:
+    ctx = flow_context()
+    await run_flow(_asking(), {}, ctx=ctx, thread_id="t5")
+    for bad in ({}, {"d" * 32: "x"}):
+        with pytest.raises(ValueError, match="pending interrupt ids"):
+            await run_flow(_asking(), ctx=ctx, thread_id="t5", resume=bad)
 
 
 async def test_ambiguous_bare_resume_needs_the_map() -> None:
@@ -85,7 +93,7 @@ async def test_ambiguous_bare_resume_needs_the_map() -> None:
     ctx = flow_context()
     first = await run_flow(b, {}, ctx=ctx, thread_id="t3")
     assert len(first.interrupts) == 2
-    with pytest.raises(ValueError, match="map of interrupt id"):
+    with pytest.raises(ValueError, match="exactly one pending interrupt"):
         await run_flow(b, ctx=ctx, thread_id="t3", resume="x")
     done = await run_flow(
         b, ctx=ctx, thread_id="t3", resume={i.id: i.value.upper() for i in first.interrupts}

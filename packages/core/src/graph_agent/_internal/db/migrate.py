@@ -52,6 +52,17 @@ def discover_migrations() -> list[Migration]:
     return [found[v] for v in sorted(found)]
 
 
+async def _lock_holder(conn: AsyncConnection[tuple[Any, ...]]) -> int | None:
+    # Session advisory locks of one key: classid/objid hold the two halves of the bigint key.
+    cur = await conn.execute(
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+        "AND ((classid::bigint << 32) | objid::bigint) = %s",
+        (ADVISORY_LOCK_KEY,),
+    )
+    row = await cur.fetchone()
+    return None if row is None else row[0]
+
+
 @asynccontextmanager
 async def advisory_lock(
     pool: AsyncConnectionPool,
@@ -66,11 +77,17 @@ async def advisory_lock(
         try:
             # Session-level lock + per-file transactions need autocommit on this connection.
             await conn.set_autocommit(True)
+            waiting = False
             while True:
                 cur = await conn.execute("SELECT pg_try_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
                 row = await cur.fetchone()
                 if row is not None and row[0]:
                     break
+                if not waiting:  # no deadline: log once so a stuck migrate is not silent
+                    waiting = True
+                    logger.warning(
+                        "migration lock is held by pid %s; waiting", await _lock_holder(conn)
+                    )
                 await asyncio.sleep(MIGRATION_LOCK_POLL_S)
             yield conn
             await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))

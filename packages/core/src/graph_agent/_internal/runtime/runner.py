@@ -9,9 +9,10 @@ import asyncio
 import logging
 import math
 import os
+import re
 import socket
 import uuid
-from collections.abc import AsyncGenerator, Coroutine, Iterator, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -432,11 +433,22 @@ async def pending_interrupts(checkpointer: Checkpointer, thread_id: uuid.UUID) -
     return tuple(ids)
 
 
+# LangGraph's own rule (pregel/_loop.py): a resume dict is an id map iff every key looks like this.
+INTERRUPT_ID: Final = re.compile(r"[0-9a-f]{32}")
+
+
+def is_resume_map(resume: object) -> bool:
+    """Whether LangGraph reads `resume` as `{interrupt_id: value}` (`{}` included)."""
+    return isinstance(resume, Mapping) and all(
+        isinstance(k, str) and INTERRUPT_ID.fullmatch(k) for k in resume
+    )
+
+
 def check_thread_command(pending: Sequence[str], *, input: object, resume: object) -> None:
     """Reject a command LangGraph would drop or fail on obscurely (design section 5).
 
-    `resume` is a map `{interrupt_id: value}` when it is a dict whose keys are all pending ids;
-    anything else is a bare value and needs exactly one pending interrupt. `None` means absent.
+    A map (`is_resume_map`) must be non-empty with only pending ids; anything else is a bare
+    value and needs exactly one pending interrupt. `None` means absent.
     """
     if input is not None:
         if pending:
@@ -447,8 +459,13 @@ def check_thread_command(pending: Sequence[str], *, input: object, resume: objec
         return
     if resume is None:
         return
-    is_map = isinstance(resume, dict) and bool(resume) and all(k in pending for k in resume)
-    if not is_map and len(pending) != 1:
+    if isinstance(resume, Mapping) and is_resume_map(resume):
+        if not resume or not set(resume) <= set(pending):
+            raise RunError(
+                ErrorCode.INVALID_REQUEST,
+                f"resume map must be non-empty with only pending interrupt ids: {list(pending)}",
+            )
+    elif len(pending) != 1:
         raise RunError(
             ErrorCode.INVALID_REQUEST,
             f"a bare resume value needs exactly one pending interrupt, the thread has "

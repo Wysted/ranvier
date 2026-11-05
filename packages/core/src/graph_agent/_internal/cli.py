@@ -1,5 +1,5 @@
 import argparse
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -223,6 +223,20 @@ def _add_run(sub: SubparsersAction) -> None:
     parser.set_defaults(handler=_run)
 
 
+async def _consume(events: "AsyncIterator[RunEvent]") -> int | None:
+    """Emit events up to the first terminal one; its exit code, or None if the stream was empty.
+
+    The caller closes the stream. An unserializable intermediate event stops consumption with
+    exit 1 (`internal_error`); in database mode closing the stream cancels the run, so the CLI
+    exits 1 while the run row ends `cancelled` (accepted: it needs a state the platform cannot
+    serialize, design section 6).
+    """
+    async for event in events:
+        if (done := _emit(event)) is not None:
+            return done
+    return None
+
+
 def _emit(event: "RunEvent") -> int | None:
     """Print one event as a JSON line; the exit code once the event is terminal, else None."""
     import sys
@@ -297,15 +311,11 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
             DEFAULT_STREAM_MODES,
             container.observers,
         )
-        code = 1  # an empty stream is not a success
         timeout = asyncio.timeout(flow.timeout_s)
         try:
             # stream_graph applies no timeout; the stream is closed here, in the consuming task.
             async with timeout, aclosing(stream):
-                async for event in stream:
-                    if (done := _emit(event)) is not None:
-                        code = done
-                        break  # terminal (or unserializable): stop consuming
+                code = await _consume(stream)
         except Exception as exc:  # reported, never swallowed: type name only (may carry secrets)
             if timeout.expired():
                 error = ErrorEvent(ErrorCode.RUN_TIMEOUT, f"run exceeded {flow.timeout_s}s", False)
@@ -314,7 +324,7 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
                 error = ErrorEvent(ErrorCode.INTERNAL_ERROR, type(exc).__name__, False)
             _emit(error)
             return 1
-        return code
+        return 1 if code is None else code  # an empty stream is not a success
 
 
 async def _run_database(
@@ -356,16 +366,11 @@ async def _run_database(
                 input=input,
                 command=None if resume is None else {"resume": resume},
             )
-            code = 1  # an empty stream (claim lost) is not a success
-            emitted = False
             async with aclosing(execute_run(container, run.run_id)) as events:
-                async for event in events:
-                    emitted = True
-                    if (done := _emit(event)) is not None:
-                        code = done
-                        break  # terminal (or unserializable): stop consuming
-            if not emitted:
+                code = await _consume(events)
+            if code is None:  # empty stream: claim lost
                 print(f"run {run.run_id} was claimed by another worker", file=sys.stderr)
+                return 1
             return code
         except RunError as exc:
             if run is not None:  # thread_busy: the pending row would stay claimable

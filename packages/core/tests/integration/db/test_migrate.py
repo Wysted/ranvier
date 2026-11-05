@@ -6,7 +6,13 @@ import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from graph_agent._internal.db.migrate import MigrationError, apply_migrations, discover_migrations
+from graph_agent._internal.db.migrate import (
+    MIGRATION_LOCK_POLL_S,
+    MigrationError,
+    advisory_lock,
+    apply_migrations,
+    discover_migrations,
+)
 from graph_agent._internal.db.pool import open_app_pool
 
 CONCURRENT_RUNNERS = 4
@@ -116,3 +122,19 @@ async def test_connection_state_restored(clean_database: str) -> None:
             assert conn.autocommit is False
     finally:
         await single.close()
+
+
+async def test_waiting_for_the_lock_is_logged_once_with_the_holder(
+    pool: AsyncConnectionPool, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING", logger="graph_agent._internal.db.migrate")
+    async with advisory_lock(pool) as holder:
+        task = asyncio.create_task(apply_migrations(pool))
+        await asyncio.sleep(MIGRATION_LOCK_POLL_S * 4)  # several polls, one log line
+        assert not task.done()
+        cur = await holder.execute("SELECT pg_backend_pid()")
+        holder_row = await cur.fetchone()
+    await task
+    warnings = [r.getMessage() for r in caplog.records if "migration lock" in r.getMessage()]
+    assert holder_row is not None
+    assert warnings == [f"migration lock is held by pid {holder_row[0]}; waiting"]
