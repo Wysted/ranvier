@@ -8,7 +8,7 @@ unblocks: [T18, T19, T23, T24, T33, T35]
 owner: sa-dev-py
 reviewer: sa-review-py
 branch: task/T16-runner
-status: todo
+status: done
 ---
 
 ## Goal
@@ -65,3 +65,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
   bootstrap: agent_fn=partial(build_agent, models=llm.model, registry=tools, mcp=mcp); pre-resolve configured tools in a thread like _prime_models.
   Minors: validate stream modes before the claim; CANCELLED claim path emits metadata first; replace the assert on run.command with an explicit error; _OWNER = hostname:pid; docstring: inline THREAD_BUSY callers must request_cancel the pending row; drop the FlowRunError alias (T17 made flows.py raise T13 RunError).
   Open for design: a drained inline run leaves the client without a terminal event (document or add a retryable code); stream_graph does not apply the run timeout — T18 must reuse the pump pattern.
+- DONE after fix loop 2 (approved). Follow-ups W1-W3, L1-L3 of the final review moved to T32's fix pass.

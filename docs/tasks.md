@@ -21,9 +21,9 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T13 | `runtime/runs.py`: state machine, conditional claims, leases, cancel flag | 5 | T06 | sa-dev-py | [T13](tasks/T13-runs-repository.md) | done |
 | T14 | `runtime/flows.py`: resolution, lazy compile cache, version checks | 5 | T05, T12, S1 | sa-dev-py | [T14](tasks/T14-flow-registry.md) | done |
 | T15 | `bootstrap.py`: Container + AsyncExitStack wiring pools, LLM, limits, tracing, checkpointer | 3 | T08, T09, T10, T11, T27, T29 | sa-dev-py | [T15](tasks/T15-bootstrap.md) | done |
-| T16 | `runtime/runner.py`: `execute_run` (claim, astream v2 -> events, heartbeat, run timeout, cancel) | 5 | T13, T14, T15, S1 | sa-dev-py | [T16](tasks/T16-runner.md) | todo |
+| T16 | `runtime/runner.py`: `execute_run` (claim, astream v2 -> events, heartbeat, run timeout, cancel) | 5 | T13, T14, T15, S1 | sa-dev-py | [T16](tasks/T16-runner.md) | done |
 | T17 | `cli.py` part 1: `validate [--diagram] [--offline]` | 2 | T14 | sa-dev-py | [T17](tasks/T17-cli-validate.md) | done |
-| T18 | `cli.py` part 2: `migrate`, `run [--memory]` | 5 | T16 | sa-dev-py | [T18](tasks/T18-cli-migrate-run.md) | todo |
+| T18 | `cli.py` part 2: `migrate`, `run [--memory]` | 5 | T16 | sa-dev-py | [T18](tasks/T18-cli-migrate-run.md) | done |
 | T19 | `testing.py`: fake chat model fixture, in-memory path, flow test helper | 6 | T16, T30 | sa-dev-py | [T19](tasks/T19-testing-kit.md) | todo |
 | T20 | `examples/`: hello and approval (interrupt) flows with tests | 6 | T19 | sa-dev-py | [T20](tasks/T20-examples-basic.md) | todo |
 | T21 | `api/dto.py`: wire DTOs and SSE mapping (`{run_id}:{seq}` ids) | 7 | T12, T13 | sa-dev-py | [T21](tasks/T21-api-dto.md) | done |

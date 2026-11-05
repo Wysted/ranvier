@@ -225,13 +225,15 @@ Flow names, versions, node names and state schemas are data stored in runs and c
 
 ### Single runner
 
-`execute_run(run_id)` is the only way a flow runs (CLI, HTTP inline, worker, cron, recovery):
+`execute_run(run_id)` is the only way a flow runs against Postgres (CLI, HTTP inline, worker, cron, recovery). Its DB-free core `stream_graph` (R2) is what `run --memory` and `graph_agent.testing` use; it does not apply the run timeout, so callers outside `execute_run` reuse the runner's pump pattern (bounded queue, `aclosing`, timeout) when they need one:
 
 1. **Claim**: conditional `UPDATE runs SET status='running', lease_owner, lease_expires_at, attempt=attempt+1` where status is `pending`, or `running` with an expired lease. No row updated: another executor owns it, return.
 2. **Resolve** the flow (lazy compile cache) and check its version against the thread.
 3. **Invoke** `graph.astream(input, config, context=RunContext(...), control=RunControl(), stream_mode=[...], subgraphs=True, version="v2", durability=flow.durability)` (`RunControl` from `langgraph.runtime`, one fresh instance per attempt, kept by the runner so shutdown can drain it) with `configurable.thread_id`, `metadata.run_id`, usage and tracing callbacks, inside `asyncio.timeout(flow.timeout_s)`.
 4. **Heartbeat** every `runs.heartbeat_s`: extends the lease and reads `cancel_requested`.
 5. **Finish**: write the terminal status, error and usage rows.
+
+Cleanup after a cancellation (finish, release, defer) runs in a detached task awaited through `asyncio.shield` and tracked by `ActiveRuns` (held by the Container) from the claim until the cleanup ends; shutdown awaits `ActiveRuns.settled()` bounded by the shutdown deadline. A cancellation while the container is draining hands the run over (release + defer) instead of cancelling it. Events go through a bounded queue (`RUN_EVENT_BUFFER`, backpressure): a slow client slows the run, and time blocked counts against `flow.timeout_s`. Usage: one usage callback per attempt; observers are notified once per streamed attempt (status `running` on drain or lost lease).
 
 Input on step 3: original input or `Command(resume=...)` on the first attempt; on a recovery attempt `None` if the latest checkpoint's `metadata["run_id"]` (read with `checkpointer.aget_tuple`) equals this `run_id`, otherwise the original input again. `run_id` goes in `config["metadata"]` as a `str`. LangGraph applies the same rule itself (re-sending the original input with the same `metadata.run_id` is a re-entry), so the check is a safety belt, not the only guard (S1). `GraphDrained` (a `GraphBubbleUp`) is caught before generic error handling: the runner releases the lease for re-claim (`release_for_drain`: lease expired now, attempt given back, token rotated) and defers the job; the run never goes back to `pending`.
 
