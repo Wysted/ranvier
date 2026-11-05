@@ -1,0 +1,128 @@
+# {{ project_name }}
+
+Flows on [graph-agent]({{ graph_agent_repo }}): plain LangGraph `StateGraph`s that the
+platform registers, runs, checkpoints in Postgres and serves over HTTP. This repo holds only what
+your product owns: flows, tools, the manifest and deployment files. The platform is a pinned
+dependency (`graph-agent` at tag `{{ graph_agent_tag }}`).
+
+## Layout
+
+| Path | What |
+|------|------|
+| `graph-agent.toml` | Manifest: flows, tools, LLM profiles, MCP servers, API auth, limits |
+| `src/{{ package_name }}/flows/` | Your flows (`example.py` is a plain `StateGraph` with one agent node) |
+| `tests/` | Flow tests with a fake model (`graph_agent.testing`) |
+| `.env.example` | Environment variable names and placeholders (copy to `.env`, never commit it) |
+| `docker-compose.yml`, `Dockerfile` | Postgres for development; the full stack for deployment |
+| `scripts/check.sh`, `.github/workflows/ci.yml` | The quality gate |
+
+Import only `graph_agent` and `graph_agent.testing`. Everything under `graph_agent._internal` may
+change in any release; ruff (`banned-api`) and import-linter fail the build if you import it.
+
+## Run
+
+```bash
+uv lock && uv sync                     # first time: commit uv.lock
+cp .env.example .env                   # then edit it
+export UV_ENV_FILE=.env                # see the note below
+ollama pull qwen3:4b                   # the default profile's model
+docker compose up -d db                # Postgres on 127.0.0.1:25432
+uv run graph-agent validate            # compile every flow in the manifest
+uv run graph-agent migrate             # schema, checkpointer tables, job queue
+uv run graph-agent serve               # HTTP API on api.host:api.port
+uv run graph-agent worker              # background runs, crons, recovery (second terminal)
+```
+
+`UV_ENV_FILE=.env` makes `uv run` load `.env` into the process environment. graph-agent reads
+`.env` only for its own settings; the secrets named by `key_env` / `api_key_env` in
+`graph-agent.toml` must be real environment variables, or `serve` fails with "env var ... is unset".
+
+Other commands: `graph-agent run example --input '{"messages": [...]}' [--memory]` runs a flow
+inline and prints its events (`--memory` needs no database), `graph-agent crons` lists declared
+crons, `graph-agent usage` reports tokens and indicative cost.
+
+The default profile uses Ollama (`qwen3:4b`), which needs no API key. To use a hosted provider add
+its extra to `pyproject.toml` (`graph-agent[openai]`) and a profile with `api_key_env`. Bootstrap
+warms up every profile, so add such a profile only when every flow can run with it.
+
+## Test
+
+```bash
+scripts/check.sh      # ruff, ruff format --check, mypy --strict, import-linter, pytest
+uv run pytest         # tests only
+```
+
+`run_flow(flow, input, ctx=flow_context(models={"fast": FakeChatModel([...])}))` runs a flow over
+an in-memory checkpointer with no database and no network; see `tests/test_example.py`. Resume an
+`interrupt()` by reusing the same `ctx` and `thread_id` with `resume=`. `tests/conftest.py` turns
+on [blockbuster](https://github.com/cbornet/blockbuster): an async test that makes a blocking call
+inside the event loop fails. Keep file and network I/O in nodes async (or run it with
+`asyncio.to_thread`).
+
+## Deploy
+
+`docker compose up -d --build` starts Postgres, a one-shot `migrate`, the `api` and the `worker`
+from one image (CPython 3.14.5+ slim, uv, `--locked`: commit `uv.lock`). To roll out a new
+build (above all after upgrading graph-agent, since Procrastinate's schema changes must not run
+under old workers): `docker compose stop api worker && docker compose up -d --build`. Behind it:
+
+- **Auth.** The API refuses `api.auth = "none"` on a non-loopback host. Static keys are declared
+  in `graph-agent.toml` by the NAME of the variable that holds them. **A key without `tenant_id`
+  is an admin key: it sees the runs and threads of every tenant.** Give each tenant its own key
+  with `tenant_id`, or plug in `api.auth = "module:callable"` returning a `Principal`.
+- **Request body size.** uvicorn does not limit request bodies. Set a limit at the gateway or
+  reverse proxy in front of the API (for example `client_max_body_size` in nginx).
+- **SSE and idle timeouts.** Streams do not send keep-alive pings yet. A proxy with an idle
+  timeout shorter than your longest silent node (a slow tool, a long model call) closes the
+  connection and cancels the inline run. Raise the proxy's idle/read timeout above the longest
+  node, or start such runs in the background and poll them.
+- **Shutdown.** On SIGTERM runs finish their current superstep and are handed over to another
+  worker. Keep the orchestrator's stop grace period above `limits.shutdown_grace_s` (60 s by
+  default) and above your longest node timeout.
+- **Health.** `GET /healthz` (liveness), `GET /readyz` (pools and event-loop lag).
+- **Ollama.** Containers cannot reach the host's Ollama at `localhost`. Set
+  `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` (the ollama client reads it when the
+  profile has no `base_url`); compose maps `host.docker.internal` on Linux. Ollama must listen
+  beyond loopback (`OLLAMA_HOST=0.0.0.0` for the Ollama server).
+- **Secrets.** Only variable NAMES live in `graph-agent.toml`; values come from the environment
+  (`.env` locally, your secret store in production). Database URLs must not embed passwords in
+  logs or error messages you add.
+
+## Idempotency
+
+A node with side effects (sending an email, charging a card, writing to another system) runs at
+least once more after a crash, a lease recovery or a resume. Design for it:
+
+1. **Derive idempotency keys from durable state written by an earlier node**, for example an
+   order id stored in the state, never from `run_id`: a resume is a new run with a new id.
+2. **Use `durability="sync"`** for flows with side effects (the manifest default): each step is
+   checkpointed before the next one starts, so a crash re-runs at most the step in flight.
+3. **Keep `interrupt()` nodes separate from side-effect nodes.** Resuming re-executes the whole
+   node from its start, so an `interrupt()` placed after a side effect repeats it.
+
+State must stay JSON-serializable and free of live resources (HTTP clients, sessions): open them
+inside the node or tool that needs them.
+
+## Update the template (`copier update`)
+
+This repo was rendered by [Copier](https://copier.readthedocs.io); `.copier-answers.yml` records
+the answers and the template version. The template is versioned together with the platform, so a
+new graph-agent tag moves the pin and the files that go with it:
+
+```bash
+git status                                  # Copier needs a clean working tree
+uvx copier update --vcs-ref v0.2.0 --data graph_agent_tag=v0.2.0
+uv lock --upgrade-package graph-agent && scripts/check.sh
+```
+
+Before deploying an upgrade, stop the running services so `migrate` runs alone (a new
+Procrastinate version changes the job-queue schema):
+`docker compose stop api worker && docker compose up -d --build`.
+
+Pass both: `--vcs-ref` picks the template version and `graph_agent_tag` is the answer that
+renders the pin in `pyproject.toml`; they must name the same tag. Without `--vcs-ref` Copier
+uses the latest tag.
+
+Copier merges the template changes into your files (three-way); resolve any conflict markers
+(`*.rej` files or inline) and review `git diff` before committing. Do not edit
+`.copier-answers.yml` by hand.
