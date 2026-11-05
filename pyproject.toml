@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = []
 
 [tool.uv.workspace]
-members = ["packages/core"]
+members = ["packages/core", "examples"]
 
 [tool.uv.sources]
 graph-agent = { workspace = true }

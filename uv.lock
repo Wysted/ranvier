@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "graph-agent",
+    "graph-agent-examples",
     "graph-agent-workspace",
 ]
 
@@ -576,6 +577,17 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0,<0.55" },
 ]
 provides-extras = ["openai", "anthropic", "ollama", "otel"]
+
+[[package]]
+name = "graph-agent-examples"
+version = "0.0.0"
+source = { editable = "examples" }
+dependencies = [
+    { name = "graph-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "graph-agent", editable = "packages/core" }]
 
 [[package]]
 name = "graph-agent-workspace"

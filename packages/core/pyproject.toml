@@ -44,7 +44,7 @@ packages = ["src/graph_agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-src = ["src", "tests"]
+src = ["src", "tests", "../../examples/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
@@ -69,7 +69,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "../../examples/src", "../../examples/tests"]
 mypy_path = ["src", "tests"]
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
@@ -88,7 +88,7 @@ filterwarnings = ["error", "ignore::DeprecationWarning:langsmith.*"]
 markers = ["integration: needs Postgres (docker compose); run with -m integration"]
 
 [tool.importlinter]
-root_package = "graph_agent"
+root_packages = ["graph_agent", "examples"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -230,3 +230,9 @@ name = "C6b only observability.tracing imports observability.otlp"
 type = "protected"
 protected_modules = ["graph_agent._internal.observability.otlp"]
 allowed_importers = ["graph_agent._internal.observability.tracing"]
+
+[[tool.importlinter.contracts]]
+name = "C2b examples use only the public facade"
+type = "forbidden"
+source_modules = ["examples"]
+forbidden_modules = ["graph_agent._internal"]
