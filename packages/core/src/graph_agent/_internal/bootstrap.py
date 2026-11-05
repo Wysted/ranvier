@@ -21,7 +21,6 @@ from psycopg_pool import AsyncConnectionPool
 from graph_agent._internal.agents.factory import build_agent
 from graph_agent._internal.agents.mcp import McpToolSource, open_mcp_sources
 from graph_agent._internal.agents.tools import ToolRegistry
-from graph_agent._internal.config.manifest import LlmProfile
 from graph_agent._internal.config.settings import Settings
 from graph_agent._internal.db.pool import (
     CheckpointerPool,
@@ -241,14 +240,7 @@ def _warn_short_grace(settings: Settings) -> None:
     timeouts = [
         *((f"tool {name}", t.timeout_s or tool_default) for name, t in settings.tools.items()),
         *((f"mcp server {name}", m.timeout_s) for name, m in settings.mcp.servers.items()),
-        *(
-            # ollama has no retries (its default max_retries is not applied)
-            (
-                f"llm profile {name}",
-                p.timeout_s * (1 if p.provider == "ollama" else p.max_retries + 1),
-            )
-            for name, p in settings.llm.profiles.items()
-        ),
+        *((f"llm profile {name}", p.timeout_s) for name, p in settings.llm.profiles.items()),
     ]
     if timeouts and wait < (longest := max(timeouts, key=lambda item: item[1]))[1]:
         logger.warning(
@@ -261,11 +253,6 @@ def _warn_short_grace(settings: Settings) -> None:
             longest[1],
             longest[0],
         )
-
-
-def _attempts(profile: LlmProfile) -> int:
-    # ollama has no retries (its default max_retries is not applied)
-    return 1 if profile.provider == "ollama" else profile.max_retries + 1
 
 
 def _prime_models(llm: LlmRegistry, profiles: list[str]) -> None:

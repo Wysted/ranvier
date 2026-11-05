@@ -45,7 +45,7 @@ DEFAULT_ADMISSION_WAIT_S = 5
 DEFAULT_SYNC_THREADS = 16
 DEFAULT_CPU_WORKERS = 2
 DEFAULT_TOOL_TIMEOUT_S = 30
-DEFAULT_SHUTDOWN_GRACE_S = 60
+DEFAULT_SHUTDOWN_GRACE_S = 90  # waits 85 s: above the default LLM (60), tool and MCP (30)
 DEFAULT_LOOP_LAG_WARN_MS = 100
 
 # Values the design left open (R7); each justified in one line.

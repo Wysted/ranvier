@@ -77,7 +77,7 @@ under old workers): `docker compose stop api worker && docker compose up -d --bu
   connection and cancels the inline run. Raise the proxy's idle/read timeout above the longest
   node, or start such runs in the background and poll them.
 - **Shutdown.** On SIGTERM runs finish their current superstep and are handed over to another
-  worker. Keep the orchestrator's stop grace period above `limits.shutdown_grace_s` (60 s by
+  worker. Keep the orchestrator's stop grace period above `limits.shutdown_grace_s` (90 s by
   default) and above your longest node timeout.
 - **Health.** `GET /healthz` (liveness), `GET /readyz` (pools and event-loop lag).
 - **Ollama.** Containers cannot reach the host's Ollama at `localhost`. Set

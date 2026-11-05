@@ -7,7 +7,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from graph_agent._internal import bootstrap
 from graph_agent._internal.bootstrap import ShutdownBudget
-from graph_agent._internal.config.manifest import FlowSpec, LlmProfile, LlmSettings, ToolSpec
+from graph_agent._internal.config.manifest import (
+    FlowSpec,
+    LlmProfile,
+    LlmSettings,
+    McpServerSpec,
+    McpSettings,
+    ToolSpec,
+)
 from graph_agent._internal.config.settings import LimitsSettings, Settings
 from graph_agent._internal.limits import HANDOVER_MARGIN_S, ShuttingDown
 from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
@@ -198,13 +205,27 @@ def test_short_grace_warns_naming_the_longest_timeout(caplog: pytest.LogCaptureF
     )
     with caplog.at_level("WARNING", logger=bootstrap.__name__):
         bootstrap._warn_short_grace(short)
-    assert "llm profile p" in caplog.text and "60s" in caplog.text and "waits 25s" in caplog.text
+    assert "tool slow" in caplog.text and "40s" in caplog.text and "waits 25s" in caplog.text
     caplog.clear()
     with caplog.at_level("WARNING", logger=bootstrap.__name__):
         bootstrap._warn_short_grace(
             short.model_copy(update={"limits": LimitsSettings(shutdown_grace_s=120)})
         )
         bootstrap._warn_short_grace(Settings(_env_file=None))  # nothing declared
+    assert caplog.text == ""
+
+
+def test_defaults_with_a_default_profile_tool_and_mcp_server_do_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        tools={"t": ToolSpec(target="m:t")},
+        llm=LlmSettings(profiles={"p": LlmProfile(provider="openai", model="m", api_key_env="K")}),
+        mcp=McpSettings(servers={"s": McpServerSpec(url="https://example.com/mcp")}),
+    )
+    with caplog.at_level("WARNING", logger=bootstrap.__name__):
+        bootstrap._warn_short_grace(settings)
     assert caplog.text == ""
 
 
