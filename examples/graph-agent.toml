@@ -7,3 +7,17 @@ description = "Plain StateGraph, no model"
 target = "examples.flows.approval:graph"
 version = 1
 description = "Pauses with interrupt() until a human answers"
+
+[flows.research]
+target = "examples.flows.research:research"
+version = 1
+description = "Lead agent with MCP doc search and a summarizer subagent used as a tool"
+
+[llm.profiles.fast]
+provider = "openai"
+model = "gpt-5.4-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[mcp.servers.docs]
+url = "https://mcp.internal/docs"
+timeout_s = 30

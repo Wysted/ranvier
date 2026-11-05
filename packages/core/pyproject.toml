@@ -236,3 +236,5 @@ name = "C2b examples use only the public facade"
 type = "forbidden"
 source_modules = ["examples"]
 forbidden_modules = ["graph_agent._internal"]
+# The facade itself imports _internal: only a direct import by an example is a violation.
+allow_indirect_imports = true
