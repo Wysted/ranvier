@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import AsyncIterator
 
+import psycopg
 import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import empty_checkpoint
@@ -17,6 +18,8 @@ POOL_MAX_SIZE = 3
 
 @pytest.fixture
 async def pool(clean_database: str) -> AsyncIterator[CheckpointerPool]:
+    with psycopg.connect(clean_database, autocommit=True) as conn:
+        conn.execute("CREATE SCHEMA graph_agent")  # `migrate` creates it before the saver setup
     pool = await open_checkpointer_pool(clean_database, max_size=POOL_MAX_SIZE)
     try:
         yield pool

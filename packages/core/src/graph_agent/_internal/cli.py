@@ -172,34 +172,22 @@ def _migrate(args: argparse.Namespace) -> int:
 
 
 async def _migrate_database(settings: "Settings") -> None:
-    from graph_agent._internal.db.migrate import ADVISORY_LOCK_KEY, apply_migrations
+    from graph_agent._internal.db.migrate import advisory_lock, apply_migrations_locked
     from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
     from graph_agent._internal.runtime.checkpointer import setup_checkpointer
 
     db = settings.database
     url = db.url.get_secret_value()
-    async with await open_app_pool(url, db.app_pool_max) as app_pool:
-        applied = await apply_migrations(app_pool)
+    # One lock for the whole sequence: concurrent `migrate` runs cannot interleave steps.
+    async with (
+        await open_app_pool(url, db.app_pool_max) as app_pool,
+        advisory_lock(app_pool) as conn,
+    ):
+        applied = await apply_migrations_locked(conn)
         print(f"migrations: applied {applied}" if applied else "migrations: up to date")
-        # The saver's own migrations run under the same advisory lock as ours, so concurrent
-        # `migrate` invocations cannot interleave them. `apply_migrations` takes and releases
-        # the lock inside its call; the part that must not race is the saver's setup.
-        async with (
-            await open_checkpointer_pool(url, db.checkpointer_pool_max) as cp_pool,
-            app_pool.connection() as conn,
-        ):
-            try:
-                await conn.set_autocommit(True)
-                await conn.execute("SELECT pg_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
-                try:
-                    await setup_checkpointer(cp_pool)
-                finally:
-                    await conn.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
-                await conn.set_autocommit(False)
-            except BaseException:
-                # Session state (lock, autocommit) is unknown: the pool must discard it.
-                await conn.close()
-                raise
+        # The saver needs the schema (applied above) because its pool pins `search_path`.
+        async with await open_checkpointer_pool(url, db.checkpointer_pool_max) as cp_pool:
+            await setup_checkpointer(cp_pool)
     print("checkpointer: ready")
 
 
@@ -237,12 +225,27 @@ def _add_run(sub: SubparsersAction) -> None:
 
 def _emit(event: "RunEvent") -> int | None:
     """Print one event as a JSON line; the exit code once the event is terminal, else None."""
-    from pydantic_core import to_json
+    import sys
+
+    from pydantic_core import PydanticSerializationError, to_json
 
     from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
+    from graph_agent._internal.runtime.runs import ErrorCode
 
     name = type(event).__name__.removesuffix("Event").lower()  # same names as the SSE events
-    line = to_json({"event": name, "data": event}, inf_nan_mode="null", fallback=str)
+    try:
+        line = to_json({"event": name, "data": event}, inf_nan_mode="null")
+    except PydanticSerializationError as exc:  # state the platform cannot serialize (design 6)
+        print(f"event {name!r} is not JSON-serializable: {exc}", file=sys.stderr)
+        line = to_json(
+            {
+                "event": "error",
+                "data": ErrorEvent(ErrorCode.INTERNAL_ERROR, "unserializable event", False),
+            },
+            inf_nan_mode="null",
+        )
+        print(line.decode(), flush=True)
+        return 1
     print(line.decode(), flush=True)
     if isinstance(event, EndEvent):
         return 0 if event.status in _OK_END_STATUSES else 1
@@ -275,7 +278,7 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.runtime.context import RunContext
     from graph_agent._internal.runtime.events import ErrorEvent
-    from graph_agent._internal.runtime.runner import DEFAULT_STREAM_MODES, stream_graph
+    from graph_agent._internal.runtime.runner import DEFAULT_STREAM_MODES, run_config, stream_graph
     from graph_agent._internal.runtime.runs import ErrorCode, RunError
 
     async with open_container(settings, memory=True) as container:
@@ -289,11 +292,7 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
         stream = stream_graph(
             flow,
             input,
-            {
-                "configurable": {"thread_id": ctx.thread_id},
-                "metadata": {"run_id": run_id, "thread_id": ctx.thread_id},
-                "max_concurrency": flow.max_concurrency,
-            },
+            run_config(ctx, flow, {}),
             ctx,
             DEFAULT_STREAM_MODES,
             container.observers,
@@ -306,6 +305,7 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
                 async for event in stream:
                     if (done := _emit(event)) is not None:
                         code = done
+                        break  # terminal (or unserializable): stop consuming
         except Exception as exc:  # reported, never swallowed: type name only (may carry secrets)
             if timeout.expired():
                 error = ErrorEvent(ErrorCode.RUN_TIMEOUT, f"run exceeded {flow.timeout_s}s", False)
@@ -320,11 +320,16 @@ async def _run_memory(settings: "Settings", name: str, input: object, thread_id:
 async def _run_database(
     settings: "Settings", name: str, input: object, resume: object, thread_id: "UUID"
 ) -> int:
+    import sys
     from contextlib import aclosing
 
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.runtime.events import ErrorEvent
-    from graph_agent._internal.runtime.runner import execute_run
+    from graph_agent._internal.runtime.runner import (
+        check_thread_command,
+        execute_run,
+        pending_interrupts,
+    )
     from graph_agent._internal.runtime.runs import ErrorCode, Run, RunError
 
     async with open_container(settings) as container:
@@ -342,6 +347,8 @@ async def _run_database(
                         f"thread {thread_id} belongs to flow {pin.flow!r}",
                     )
                 version = pin.flow_version  # execute_run rejects it if the flow moved on
+            pending = await pending_interrupts(container.checkpointer, thread_id)
+            check_thread_command(pending, input=input, resume=resume)
             run = await runs.create(
                 thread_id=thread_id,
                 flow=name,
@@ -350,10 +357,15 @@ async def _run_database(
                 command=None if resume is None else {"resume": resume},
             )
             code = 1  # an empty stream (claim lost) is not a success
+            emitted = False
             async with aclosing(execute_run(container, run.run_id)) as events:
                 async for event in events:
+                    emitted = True
                     if (done := _emit(event)) is not None:
                         code = done
+                        break  # terminal (or unserializable): stop consuming
+            if not emitted:
+                print(f"run {run.run_id} was claimed by another worker", file=sys.stderr)
             return code
         except RunError as exc:
             if run is not None:  # thread_busy: the pending row would stay claimable

@@ -161,3 +161,15 @@ def test_resume_needs_thread_and_database(
 ) -> None:
     assert main(["run", *argv]) == EXIT_USAGE
     assert "--resume needs" in capsys.readouterr().err
+
+
+def test_unserializable_event_becomes_internal_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from graph_agent._internal.cli import _emit
+    from graph_agent._internal.runtime.events import ValuesEvent
+
+    assert _emit(ValuesEvent((), object())) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["data"]["code"] == "internal_error"
+    assert "not JSON-serializable" in captured.err

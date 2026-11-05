@@ -10,6 +10,8 @@ from psycopg import AsyncConnection
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from graph_agent._internal.db.migrate import SCHEMA
+
 logger = logging.getLogger(__name__)
 
 MIN_POOL_SIZE = 1
@@ -34,7 +36,13 @@ async def open_checkpointer_pool(url: str, max_size: int) -> CheckpointerPool:
         name="graph_agent_checkpointer",
         min_size=MIN_POOL_SIZE,
         max_size=max_size,
-        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        kwargs={
+            "autocommit": True,
+            "prepare_threshold": 0,
+            "row_factory": dict_row,
+            # Pin the saver tables to our schema, whatever the role is called.
+            "options": f"-c search_path={SCHEMA}",
+        },
         open=False,
     )
     await pool.open(wait=True)

@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 from pathlib import Path
 
 import psycopg
@@ -62,6 +63,9 @@ def test_migrate_applies_then_is_idempotent(
     assert "migrations: applied [1" in first and "checkpointer: ready" in first
     tables = _tables(cli_env)
     assert {"graph_agent.runs", "graph_agent.schema_version", "graph_agent.checkpoints"} <= tables
+    with psycopg.connect(cli_env) as conn:  # saver tables live in our schema, not the role's
+        row = conn.execute("SELECT to_regclass('graph_agent.checkpoints')").fetchone()
+    assert row is not None and row[0] is not None
 
     assert main(["migrate"]) == 0
     assert "migrations: up to date" in capsys.readouterr().out
@@ -105,3 +109,45 @@ def test_run_rejects_a_thread_of_another_flow(
     assert main(["run", "other", "--thread", THREAD, "--input", "{}"]) == 1
     last = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert last["data"]["code"] == "invalid_request"
+
+
+CONCURRENT_MIGRATE_TIMEOUT_S = 60
+
+
+def test_concurrent_migrates_both_finish(cli_env: str) -> None:
+    """A blocked `pg_advisory_lock` used to deadlock against `CREATE INDEX CONCURRENTLY`."""
+    codes: list[int] = []
+    threads = [
+        threading.Thread(target=lambda: codes.append(main(["migrate"])), daemon=True)
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(CONCURRENT_MIGRATE_TIMEOUT_S)
+    assert not any(t.is_alive() for t in threads), "concurrent migrate hung"
+    assert codes == [0, 0]
+
+
+def test_run_on_a_busy_thread_cancels_its_row(
+    cli_env: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["migrate"]) == 0
+    with psycopg.connect(cli_env, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO graph_agent.runs "
+            "(run_id, thread_id, flow, flow_version, status, input, lease_owner, lease_expires_at) "
+            "VALUES (gen_random_uuid(), %s, 'asks', 1, 'running', '{}', 'w', "
+            "now() + interval '1 hour')",
+            (THREAD,),
+        )
+    capsys.readouterr()
+    assert main(["run", "asks", "--thread", THREAD, "--input", "{}"]) == 1
+    last = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert last["data"]["code"] == "thread_busy"
+    with psycopg.connect(cli_env) as conn:
+        rows = conn.execute(
+            "SELECT status FROM graph_agent.runs WHERE thread_id = %s AND status <> 'running'",
+            (THREAD,),
+        ).fetchall()
+    assert [r[0] for r in rows] == ["cancelled"]
