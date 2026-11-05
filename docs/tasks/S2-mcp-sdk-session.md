@@ -8,7 +8,7 @@ unblocks: [T29]
 owner: sa-debug-py
 reviewer: sa-review-py
 branch: task/S2-mcp-sdk-session
-status: todo
+status: done
 ---
 
 ## Goal
