@@ -21,12 +21,12 @@ from graph_agent._internal.runtime.events import (
     UpdatesEvent,
     ValuesEvent,
 )
+from graph_agent._internal.runtime.runner import DEFAULT_STREAM_MODES
 from graph_agent._internal.runtime.runs import ErrorCode, Run, RunError, RunStatus
 
 logger = logging.getLogger(__name__)
 
 StreamMode = Literal["updates", "values", "messages", "custom"]
-DEFAULT_STREAM_MODES: Final[tuple[StreamMode, ...]] = ("updates", "custom")
 
 # The one place an error code becomes an HTTP status.
 ERROR_STATUS: Final[dict[ErrorCode, HTTPStatus]] = {
@@ -77,7 +77,9 @@ class RunRequest(_Dto):
     flow: str
     input: Any = None
     command: ResumeCommand | None = None
-    stream_mode: list[StreamMode] = Field(default_factory=lambda: list(DEFAULT_STREAM_MODES))
+    stream_mode: list[StreamMode] = Field(
+        default_factory=lambda: list[StreamMode](DEFAULT_STREAM_MODES)
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")

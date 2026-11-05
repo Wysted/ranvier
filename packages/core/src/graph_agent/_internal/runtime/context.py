@@ -30,8 +30,10 @@ class RunContext:
 class FlowContext(Protocol):
     """Handed to flow factories at build time."""
 
-    flow: str
-    config: Mapping[str, Any]  # [flows.<name>.config] from the manifest
+    @property
+    def flow(self) -> str: ...
+    @property
+    def config(self) -> Mapping[str, Any]: ...  # [flows.<name>.config] from the manifest
 
     def model(self, profile: str) -> BaseChatModel: ...
     def tools(self, *names: str) -> list[BaseTool]: ...

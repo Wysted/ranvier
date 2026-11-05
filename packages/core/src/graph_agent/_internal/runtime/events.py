@@ -1,13 +1,14 @@
 """Transport-agnostic run events and the mapping from LangGraph v2 stream parts."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from graph_agent._internal.runtime.context import RunContext
+from graph_agent._internal.usage import Counts
 
 INTERRUPT_KEY = "__interrupt__"
 # Reserved `updates` key: LangGraph re-emits cached writes as `{"__metadata__": {"cached": True}}`.
@@ -100,9 +101,13 @@ RunEvent = (
 
 @dataclass(frozen=True, slots=True)
 class RunOutcome:
+    """What `RunObserver.on_finish` gets; `status` is `running` when the attempt ended without a
+    terminal write (drain, lost lease): the ledger still records the tokens it spent."""
+
     status: str
     usage: UsageTotals
     error: ErrorEvent | None = None
+    usage_by_key: dict[tuple[str, str], Counts] = field(default_factory=dict)  # (model, agent)
 
 
 class RunObserver(Protocol):
