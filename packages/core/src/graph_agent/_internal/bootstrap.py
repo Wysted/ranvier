@@ -151,7 +151,9 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
 
         flows = FlowRegistry(settings.flows, checkpointer, flow_context)
 
+        active_runs = ActiveRuns()
         gauges |= {
+            "active_attempts": lambda: len(active_runs),
             "loop_lag_ms": lambda: sampler.current_ms,
             "active_runs": lambda: limits.active_runs,
             "admission_waiters": lambda: limits.waiters,
@@ -180,6 +182,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             mcp=mcp,
             shutdown_budget=budget,
             flows=flows,
+            active_runs=active_runs,
             # Memory mode has no ledger: the runner still counts for the `end` event.
             observers=[UsageObserver(UsageRepository(app_pool))] if app_pool is not None else [],
         )

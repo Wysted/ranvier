@@ -16,6 +16,7 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
+from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.runtime.checkpointer import Checkpointer
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent, RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
@@ -81,6 +82,9 @@ class Resources:
     queue: RunQueue | None = None
     active_runs: ActiveRuns = field(default_factory=ActiveRuns)
     shutdown_budget: Budget = field(default_factory=Budget)
+    observability: Observability = field(
+        default_factory=lambda: Observability(metrics=LoggingMetrics())
+    )
 
 
 @pytest.fixture
