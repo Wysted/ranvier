@@ -33,7 +33,10 @@ from graph_agent._internal.runtime.checkpointer import (
     create_checkpointer,
     create_memory_checkpointer,
 )
+from graph_agent._internal.runtime.context import FlowContextImpl
 from graph_agent._internal.runtime.events import RunObserver
+from graph_agent._internal.runtime.flows import FlowRegistry
+from graph_agent._internal.runtime.runner import RunQueue
 from graph_agent._internal.runtime.runs import RunsRepository
 
 logger = logging.getLogger(__name__)
@@ -71,7 +74,9 @@ class Container:
     tools: ToolRegistry
     mcp: McpToolSource
     shutdown_budget: ShutdownBudget
+    flows: FlowRegistry
     observers: list[RunObserver] = field(default_factory=list)  # T32 appends
+    queue: RunQueue | None = None  # T24 sets it; None: inline-only process
 
 
 @asynccontextmanager
@@ -128,6 +133,18 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
         tools = ToolRegistry(settings.tools, settings.limits, cpu_pool)
         mcp = await open_mcp_sources(settings.mcp.servers, stack)
 
+        def flow_context(name: str) -> FlowContextImpl:
+            return FlowContextImpl(
+                flow=name,
+                config=settings.flows[name].config,
+                model_fn=llm.model,
+                tools_fn=lambda *names: tools.resolve(names),
+            )
+
+        # shortcut: FlowContextImpl is frozen, FlowContext declares settable attributes; make the
+        # Protocol attributes read-only (runtime/context.py, T14) and drop this ignore.
+        flows = FlowRegistry(settings.flows, checkpointer, flow_context)  # type: ignore[arg-type]
+
         gauges |= {
             "loop_lag_ms": lambda: sampler.current_ms,
             "active_runs": lambda: limits.active_runs,
@@ -156,6 +173,7 @@ async def open_container(settings: Settings, *, memory: bool = False) -> AsyncIt
             tools=tools,
             mcp=mcp,
             shutdown_budget=budget,
+            flows=flows,
         )
 
 
