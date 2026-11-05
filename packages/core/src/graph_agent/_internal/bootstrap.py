@@ -8,6 +8,7 @@ tracing and the checkpointer (design sections 2, 8). Each resource is entered in
 import asyncio
 import logging
 import math
+import threading
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
@@ -27,7 +28,14 @@ from graph_agent._internal.db.pool import (
     open_app_pool,
     open_checkpointer_pool,
 )
-from graph_agent._internal.limits import CpuPool, Limits, LoopLagSampler, install_default_executor
+from graph_agent._internal.limits import (
+    HANDOVER_MARGIN_S,
+    CpuPool,
+    Limits,
+    LoopLagSampler,
+    graceful_wait_s,
+    install_default_executor,
+)
 from graph_agent._internal.llm import LlmRegistry
 from graph_agent._internal.observability.tracing import Observability, setup_observability
 from graph_agent._internal.queue import ProcrastinateRunQueue, make_app
@@ -39,7 +47,7 @@ from graph_agent._internal.runtime.checkpointer import (
 from graph_agent._internal.runtime.context import FlowContextImpl
 from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
+from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue, settle_runs, start_drain
 from graph_agent._internal.runtime.runs import RunsRepository
 from graph_agent._internal.usage import UsageObserver, UsageRepository
 
@@ -58,7 +66,9 @@ class ShutdownBudget:
         self.deadline = math.inf  # until close starts
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        self.deadline = loop.time() + self._grace_s
+        """Idempotent: the signal handler starts the clock, the container close must not move it."""
+        if math.isinf(self.deadline):
+            self.deadline = loop.time() + self._grace_s
 
 
 @dataclass(slots=True)
@@ -80,8 +90,17 @@ class Container:
     shutdown_budget: ShutdownBudget
     flows: FlowRegistry
     observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)  # T26 drains these
+    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
     queue: RunQueue | None = None  # T24 sets it; None: inline-only process
+
+    def begin_shutdown(self) -> None:
+        """Idempotent, sync, loop thread: start the clock, refuse new inline runs, drain the rest.
+
+        The entrypoint calls it on SIGTERM/SIGINT, before it waits for connections or jobs; the
+        close of `open_container` then waits (bounded) for the runs and closes the pools.
+        """
+        self.limits.stop_admission()
+        start_drain(self.active_runs, self.shutdown_budget)
 
 
 @asynccontextmanager
@@ -96,6 +115,7 @@ async def open_container(
     async with AsyncExitStack() as stack:
         loop = asyncio.get_running_loop()
         # First in, last out: later teardown steps (observability flush) still use to_thread.
+        _warn_short_grace(settings)
         executor = install_default_executor(loop, settings.limits.sync_threads)
         stack.callback(_restore_default_executor, loop, executor)
 
@@ -178,7 +198,9 @@ async def open_container(
         publisher = asyncio.create_task(_publish_gauges(obs, gauges), name="gauge-publisher")
         publisher.add_done_callback(_log_publisher_death)
         stack.push_async_callback(_cancel, publisher)
-        stack.callback(budget.start, loop)  # registered last: runs first, starts the shared clock
+        # Registered last, so it runs first: start the shared clock (unless the entrypoint did),
+        # drain the runs in flight and await them before any pool closes.
+        stack.push_async_callback(_settle_runs, active_runs, budget)
 
         yield Container(
             settings=settings,
@@ -202,6 +224,37 @@ async def open_container(
         )
 
 
+def _warn_short_grace(settings: Settings) -> None:
+    """A drain waits for the superstep in flight: the real wait should outlast the longest I/O."""
+    grace = settings.limits.shutdown_grace_s
+    wait = graceful_wait_s(grace)
+    if grace > 0 and wait == 0:
+        logger.warning(
+            "limits.shutdown_grace_s (%gs) is not above the %gs hand-over margin: drain disabled, "
+            "a shutdown cancels runs at once and their nodes re-run",
+            grace,
+            HANDOVER_MARGIN_S,
+        )
+        return
+    tool_default = settings.limits.tool_timeout_s
+    timeouts = [
+        *((f"tool {name}", t.timeout_s or tool_default) for name, t in settings.tools.items()),
+        *((f"mcp server {name}", m.timeout_s) for name, m in settings.mcp.servers.items()),
+        *((f"llm profile {name}", p.timeout_s) for name, p in settings.llm.profiles.items()),
+    ]
+    if timeouts and wait < (longest := max(timeouts, key=lambda item: item[1]))[1]:
+        logger.warning(
+            "the shutdown drain waits %gs (limits.shutdown_grace_s %gs minus the %gs hand-over "
+            "margin), less than the %gs of %s: a node still inside it at the deadline is "
+            "cancelled and the run is handed over, so that node re-runs",
+            wait,
+            grace,
+            HANDOVER_MARGIN_S,
+            longest[1],
+            longest[0],
+        )
+
+
 def _prime_models(llm: LlmRegistry, profiles: list[str]) -> None:
     for name in profiles:
         llm.model(name)
@@ -219,11 +272,41 @@ def _restore_default_executor(
     executor.shutdown(wait=False)
 
 
+async def _settle_runs(active: ActiveRuns, budget: ShutdownBudget) -> None:
+    start_drain(active, budget)  # idempotent: the entrypoint may have begun already
+    await settle_runs(active, budget)
+
+
 async def _shutdown_observability(obs: Observability, budget: ShutdownBudget) -> None:
-    """`Observability.shutdown` blocks (exporters); it gets what is left of the shutdown budget."""
+    """`Observability.shutdown` blocks (exporters); it gets what is left of the shutdown budget.
+
+    A daemon thread, not `to_thread`: an abandoned flush (collector down) must not keep the
+    process alive past the deadline.
+    """
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    def settle(exc: BaseException | None) -> None:
+        if done.done():  # cancelled by the timeout
+            return
+        if exc is None:
+            done.set_result(None)
+        else:
+            done.set_exception(exc)
+
+    def flush() -> None:
+        try:
+            obs.shutdown()
+            outcome = None
+        except BaseException as exc:  # handed to the awaiting side below
+            outcome = exc
+        with suppress(RuntimeError):  # the loop may be gone when an abandoned flush ends
+            loop.call_soon_threadsafe(settle, outcome)
+
+    threading.Thread(target=flush, name="observability-shutdown", daemon=True).start()
     try:
         async with asyncio.timeout_at(budget.deadline):
-            await asyncio.to_thread(obs.shutdown)
+            await done
     except TimeoutError:
         logger.warning("observability shutdown exceeded the shutdown grace, abandoning flush")
 

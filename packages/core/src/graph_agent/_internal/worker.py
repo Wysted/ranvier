@@ -4,10 +4,12 @@ Worker processes build their own container; nothing is shared with the API proce
 prune and cron tasks (housekeeping) live on the same app.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from datetime import timedelta
 from typing import Final
@@ -19,9 +21,14 @@ from psycopg import AsyncConnection
 
 from graph_agent._internal.config.manifest import CronSpec
 from graph_agent._internal.db.pool import with_options
+from graph_agent._internal.limits import graceful_wait_s
 from graph_agent._internal.queue import EXECUTE_RUN, ProcrastinateRunQueue
 from graph_agent._internal.runtime.checkpointer import prune_checkpoints
-from graph_agent._internal.runtime.runner import RunnerResources, execute_run
+from graph_agent._internal.runtime.runner import (
+    RunnerResources,
+    execute_run,
+    start_drain,
+)
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository
 
 logger = logging.getLogger(__name__)
@@ -183,7 +190,10 @@ async def _delete_idle_thread(
     # shortcut: a run created between the check above and the row delete loses its checkpoints
     # (the conditional delete spares its row); closing it needs the per-thread lock (T26 note).
     await res.checkpointer.adelete_thread(str(thread_id))
-    await runs.delete_idle_thread(thread_id, delete_after)
+    if await runs.delete_idle_thread(thread_id, delete_after) == 0:
+        logger.warning(
+            "thread %s became active during its delete: checkpoints gone, run rows kept", thread_id
+        )
 
 
 async def prune_threads(res: RunnerResources, runs: RunsRepository) -> None:
@@ -199,16 +209,34 @@ async def prune_threads(res: RunnerResources, runs: RunsRepository) -> None:
     idle = await runs.idle_threads(timedelta(days=cfg.ttl_days))
     doomed = [t for t, age in idle if age > delete_after]
     stale = [t for t, age in idle if age <= delete_after]
-    for thread_id in doomed:
+    if await _per_thread(
+        doomed, lambda t: _delete_idle_thread(res, runs, t, delete_after), "deleted"
+    ):
+        await _per_thread(stale, lambda t: prune_checkpoints(res.checkpointer, [t]), "pruned")
+
+
+def _database_down(exc: Exception) -> bool:
+    """Client-side connection failure (refused, dropped, `PoolTimeout`): no SQLSTATE, unlike a
+    deadlock or a serialization failure, which are per-thread."""
+    return isinstance(exc, psycopg.OperationalError) and exc.sqlstate is None
+
+
+async def _per_thread(
+    threads: list[uuid.UUID], action: Callable[[uuid.UUID], Awaitable[None]], what: str
+) -> bool:
+    """Run `action` per thread; a thread that fails logs and the rest go on.
+
+    False: the database is unreachable, so one warning and the loop stops (not one per thread).
+    """
+    for thread_id in threads:
         try:
-            await _delete_idle_thread(res, runs, thread_id, delete_after)
-        except _THREAD_ERRORS:
-            logger.warning("thread %s not deleted", thread_id, exc_info=True)
-    for thread_id in stale:
-        try:
-            await prune_checkpoints(res.checkpointer, [thread_id])
-        except _THREAD_ERRORS:
-            logger.warning("thread %s not pruned", thread_id, exc_info=True)
+            await action(thread_id)
+        except _THREAD_ERRORS as exc:
+            if _database_down(exc):
+                logger.warning("database unreachable, prune stopped at thread %s", thread_id)
+                return False
+            logger.warning("thread %s not %s", thread_id, what, exc_info=True)
+    return True
 
 
 async def fire_cron(
@@ -224,7 +252,9 @@ async def fire_cron(
     """One cron firing: a run on a new thread, idempotent per (periodic_id, timestamp).
 
     A lagging deferrer can defer an old firing twice (S4): the ids are deterministic and the
-    insert ignores conflicts, so the second one stops here.
+    insert ignores conflicts, so no second run exists. The defer happens either way (the first
+    attempt may have failed after the insert): a duplicate is dropped by the queueing lock or
+    exits at the claim.
     """
     spec = res.settings.flows.get(flow)
     if spec is None:
@@ -241,9 +271,8 @@ async def fire_cron(
         input=input,
         metadata={"cron": periodic_id, "scheduled_at": timestamp},
     )
-    if not created:
+    if not created:  # a retried attempt after a failed defer: defer again (a repeat is a no-op)
         logger.debug("cron firing %s already has its run", key)
-        return
     await queue.defer(run_id, thread_id)
 
 
@@ -295,9 +324,40 @@ def _register_housekeeping(
 
 
 async def run_worker(container: RunnerResources) -> None:
-    """Serve jobs until cancelled, `limits.max_active_runs` at a time (heartbeat defaults)."""
+    """Serve jobs, `limits.max_active_runs` at a time (heartbeat defaults), until cancelled.
+
+    Cancelling this task is the graceful stop (the entrypoint does it on SIGTERM/SIGINT;
+    Procrastinate's own signal handlers are off). Order: stop fetching, ask the runs in flight
+    to drain (each one stops after its superstep, releases its lease and defers itself) and wait
+    for the jobs, bounded by the shutdown budget. The caller's `open_container` close awaits every
+    cleanup before it closes the pools. Jobs still running at `graceful_wait_s` are aborted
+    (they hand over too).
+    """
     app = register_tasks(container)
-    await app.run_worker_async(
-        concurrency=container.settings.limits.max_active_runs,
-        fetch_job_polling_interval=FETCH_POLL_INTERVAL_S,
+    limits = container.settings.limits
+    worker = asyncio.create_task(
+        app.run_worker_async(
+            concurrency=limits.max_active_runs,
+            fetch_job_polling_interval=FETCH_POLL_INTERVAL_S,
+            install_signal_handlers=False,
+            shutdown_graceful_timeout=graceful_wait_s(limits.shutdown_grace_s),
+        ),
+        name="procrastinate-worker",
     )
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        if worker.done():  # the worker ended by itself, this cancel is ours alone
+            raise
+        worker.cancel()  # Procrastinate stops fetching, waits for its running jobs, then re-raises
+        start_drain(container.active_runs, container.shutdown_budget)
+        loop = asyncio.get_running_loop()
+        # `open_container`'s close settles the runs; here only the worker's own stop is bounded.
+        _, pending = await asyncio.wait(
+            {worker}, timeout=max(container.shutdown_budget.deadline - loop.time(), 0)
+        )
+        if pending:
+            logger.error("worker did not stop within the shutdown grace")
+        elif not worker.cancelled() and (exc := worker.exception()) is not None:
+            logger.error("worker failed while stopping", exc_info=exc)
+        raise

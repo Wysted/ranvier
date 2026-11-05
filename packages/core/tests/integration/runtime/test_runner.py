@@ -1,10 +1,8 @@
 import asyncio
-import math
 import sys
 import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import pytest
@@ -16,12 +14,11 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import RunsSettings, Settings
 from graph_agent._internal.db.migrate import apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
-from graph_agent._internal.runtime.checkpointer import Checkpointer
-from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent, RunObserver
+from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue, execute_run
+from graph_agent._internal.runtime.runner import execute_run
 from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository, RunStatus
+from integration._resources import Resources
 
 MODULE = "t16_integration_flows"
 FLOW_VERSION = 1
@@ -65,26 +62,6 @@ async def pool(clean_database: str) -> AsyncIterator[AsyncConnectionPool]:
         yield pool
     finally:
         await pool.close()
-
-
-@dataclass
-class Budget:
-    deadline: float = math.inf
-
-
-@dataclass
-class Resources:
-    settings: Settings
-    runs: RunsRepository | None
-    flows: FlowRegistry
-    checkpointer: Checkpointer
-    observers: list[RunObserver] = field(default_factory=list)
-    queue: RunQueue | None = None
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
-    observability: Observability = field(
-        default_factory=lambda: Observability(metrics=LoggingMetrics())
-    )
 
 
 @pytest.fixture

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import threading
 import time
 from collections.abc import Iterator
@@ -12,10 +13,13 @@ from blockbuster import blockbuster_ctx
 
 from graph_agent._internal.config.settings import LimitsSettings
 from graph_agent._internal.limits import (
+    HANDOVER_MARGIN_S,
     CpuPool,
     Limits,
     LoopLagSampler,
+    ShuttingDown,
     TooManyRuns,
+    graceful_wait_s,
     install_default_executor,
 )
 
@@ -255,3 +259,32 @@ async def test_lag_sampler_stop_surfaces_sampler_error() -> None:
     await asyncio.sleep(0)
     with pytest.raises(ValueError, match="sampler died"):
         await sampler.stop()
+
+
+async def test_stop_admission_refuses_new_and_waiting_runs() -> None:
+    limits = Limits(LimitsSettings(max_active_runs=1, admission_wait_s=5))
+    async with limits.admit():
+        waiting = asyncio.create_task(limits.admit().__aenter__())
+        await asyncio.sleep(0.01)
+        limits.stop_admission()
+        with pytest.raises(ShuttingDown):  # asked while the slot is busy
+            await limits.admit().__aenter__()
+    with pytest.raises(ShuttingDown):  # the waiter woke up when the slot freed
+        await waiting
+    assert limits.active_runs == 0 and limits.waiters == 0
+    with pytest.raises(ShuttingDown):  # and the slot is not leaked
+        await limits.admit().__aenter__()
+
+
+def test_graceful_wait_leaves_a_margin_for_the_hand_over() -> None:
+    assert graceful_wait_s(60) == 60 - HANDOVER_MARGIN_S
+    assert graceful_wait_s(1) == 0
+
+
+async def test_cpu_pool_worker_ignores_sigint() -> None:
+    pool = CpuPool(1)
+    await pool.start()
+    try:  # signal.getsignal runs in the forkserver worker, where the initializer ran
+        assert await pool.run(signal.getsignal, signal.SIGINT, timeout_s=10) == signal.SIG_IGN
+    finally:
+        pool.close()

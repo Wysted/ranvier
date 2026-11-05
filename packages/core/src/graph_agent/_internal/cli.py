@@ -1,6 +1,7 @@
 import argparse
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -39,6 +40,7 @@ def _load_settings() -> "Settings | None":
     return None
 
 
+logger = logging.getLogger(__name__)
 LOG_LEVEL = logging.INFO
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -412,20 +414,13 @@ _COMMANDS.append(_add_run)
 
 
 def _serve(args: argparse.Namespace) -> int:
-    import uvicorn
+    from graph_agent._internal.api.app import serve
 
     _configure_logging()
     settings = _load_settings()  # validates up front with readable errors
     if settings is None:
         return 1
-    # cli sits above api (C1) but names the factory as a string: uvicorn imports it, which loads
-    # the same Settings() again inside the server process.
-    uvicorn.run(
-        "graph_agent._internal.api.app:app_from_env",
-        factory=True,
-        host=settings.api.host,
-        port=settings.api.port,
-    )
+    serve(settings)
     return 0
 
 
@@ -464,11 +459,62 @@ def _worker(args: argparse.Namespace) -> int:
 
 
 async def _serve_jobs(settings: "Settings") -> None:
+    import asyncio
+
     from graph_agent._internal.bootstrap import open_container
     from graph_agent._internal.worker import WORKER_EXTRA_CONNECTIONS, run_worker
 
-    async with open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container:
-        await run_worker(container)
+    main = asyncio.current_task()
+    assert main is not None
+    worker: asyncio.Task[None] | None = None
+
+    def cancel() -> None:  # the worker's cancel path is the graceful stop; before it exists, abort
+        (worker or main).cancel()
+
+    # The handlers outlive `open_container`: a signal during the close (pools, telemetry flush)
+    # must not raise KeyboardInterrupt in the middle of it or kill the process with SIG_DFL.
+    async with (
+        _until_signalled(cancel),
+        open_container(settings, extra_connections=WORKER_EXTRA_CONNECTIONS) as container,
+    ):
+        worker = asyncio.create_task(run_worker(container))
+        await worker
+
+
+@asynccontextmanager
+async def _until_signalled(cancel: Callable[[], None]) -> AsyncIterator[None]:
+    """Call `cancel` on the first SIGTERM/SIGINT and swallow the cancellation it causes.
+
+    The block returns normally after a signal (a cancellation from outside still propagates).
+    Ours instead of the interpreter's, so Ctrl+C is not a KeyboardInterrupt in the middle of the
+    shutdown; a second signal is ignored (SIGKILL forces).
+    """
+    import asyncio
+    import signal
+
+    loop = asyncio.get_running_loop()
+    signalled = False
+
+    def on_signal(sig: signal.Signals) -> None:
+        nonlocal signalled
+        if signalled:
+            logger.warning("already shutting down (%s ignored); SIGKILL forces", sig.name)
+            return
+        signalled = True
+        logger.info("%s received: draining runs and shutting down", sig.name)
+        cancel()
+
+    handled = (signal.SIGINT, signal.SIGTERM)
+    for sig in handled:
+        loop.add_signal_handler(sig, on_signal, sig)
+    try:
+        yield
+    except asyncio.CancelledError:
+        if not signalled:  # cancelled from outside, not by us
+            raise
+    finally:
+        for sig in handled:
+            loop.remove_signal_handler(sig)
 
 
 def _add_crons(sub: SubparsersAction) -> None:

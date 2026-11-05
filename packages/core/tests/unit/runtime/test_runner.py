@@ -8,6 +8,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 
+from graph_agent._internal.bootstrap import ShutdownBudget
 from graph_agent._internal.runtime import runner
 from graph_agent._internal.runtime.context import RunContext
 from graph_agent._internal.runtime.events import (
@@ -26,6 +27,8 @@ from graph_agent._internal.runtime.flows import CompiledFlow
 from graph_agent._internal.runtime.runner import (
     ActiveRuns,
     execute_run,
+    settle_runs,
+    start_drain,
     stream_graph,
 )
 from graph_agent._internal.runtime.runs import (
@@ -493,6 +496,20 @@ async def test_cancelled_while_draining_hands_the_run_over(user_module: types.Mo
     assert cast(FakeQueue, res.queue).deferred == [(run.run_id, run.thread_id)]
 
 
+async def test_closed_at_a_yield_while_draining_hands_the_run_over(
+    user_module: types.ModuleType,
+) -> None:
+    run = _run("slow")
+    res, fake = _resources(run)
+    gen = execute_run(res, run.run_id)
+    await anext(gen)  # metadata: the generator is suspended at its yield
+    res.active_runs.request_drain()  # the server then closes the stream (GeneratorExit)
+    await gen.aclose()
+    await res.active_runs.settled()
+    assert fake.finished == [] and fake.released == [TOKEN]
+    assert cast(FakeQueue, res.queue).deferred == [(run.run_id, run.thread_id)]
+
+
 async def test_pump_cancelled_without_a_reason_is_an_internal_error(
     user_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -548,3 +565,29 @@ def test_active_runs_tracks_and_drains() -> None:
     assert len(active) == 0
     with active.track():  # claimed during shutdown: starts already asked to drain
         assert active.draining
+
+
+async def test_settle_runs_stops_waiting_at_the_shutdown_deadline() -> None:
+    active = ActiveRuns()
+    budget = ShutdownBudget(0.05)
+    gate = asyncio.Event()
+    stuck = active.spawn(gate.wait())  # a cleanup that never ends (hung write)
+    start_drain(active, budget)
+    assert active.draining and budget.deadline != float("inf")
+    started = time.monotonic()
+    assert await settle_runs(active, budget) is False
+    assert time.monotonic() - started < 1
+    gate.set()
+    await stuck
+    assert await settle_runs(active, budget) is True
+
+
+async def test_settle_runs_without_a_started_clock_waits_for_the_runs() -> None:
+    active = ActiveRuns()
+    gate = asyncio.Event()
+    active.spawn(gate.wait())
+    waiter = asyncio.create_task(settle_runs(active, ShutdownBudget(0.01)))  # clock not started
+    await asyncio.sleep(0.05)
+    assert not waiter.done()
+    gate.set()
+    assert await waiter is True

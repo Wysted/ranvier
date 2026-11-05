@@ -2,11 +2,15 @@
 
 import asyncio
 import logging
+import signal
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from http import HTTPStatus
+from types import FrameType
 from typing import Final
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -15,8 +19,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from graph_agent._internal.api.auth import AuthError, build_authenticator
 from graph_agent._internal.api.dto import ERROR_STATUS, error_response
 from graph_agent._internal.api.routes import health, router
-from graph_agent._internal.bootstrap import open_container
+from graph_agent._internal.bootstrap import Container, open_container
 from graph_agent._internal.config.settings import Settings
+from graph_agent._internal.limits import graceful_wait_s
 from graph_agent._internal.runtime.runs import ErrorCode, RunError
 
 logger = logging.getLogger(__name__)
@@ -85,6 +90,45 @@ def create_app(settings: Settings) -> FastAPI:
     return app
 
 
-def app_from_env() -> FastAPI:
-    """Factory for `uvicorn --factory` (`graph-agent serve`): settings from manifest and env."""
-    return create_app(Settings())
+class DrainingServer(uvicorn.Server):
+    """uvicorn that begins the platform shutdown before it waits for connections.
+
+    Left alone, uvicorn waits for every open stream first and the lifespan only ends afterwards,
+    so inline runs would not hear about the shutdown until then. Here the first thing `shutdown`
+    does is `Container.begin_shutdown`: admission closes and the runs in flight drain (their
+    streams end with `run_handed_over`), then uvicorn closes the listener and waits.
+    """
+
+    def __init__(self, config: uvicorn.Config, app: FastAPI) -> None:
+        super().__init__(config)
+        self._app = app
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        container: Container | None = getattr(self._app.state, "container", None)
+        if container is not None:  # None: the lifespan never got that far
+            container.begin_shutdown()
+        await super().shutdown(sockets)
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        # Upstream records the signal and re-raises it with the original handler once the server is
+        # done: SIGTERM then kills the interpreter before its cleanup (leaked semaphores) and
+        # SIGINT raises KeyboardInterrupt. Exiting normally is the point of a graceful stop. A
+        # later signal is ignored: upstream's force_exit would skip the lifespan shutdown.
+        if self.should_exit:
+            logger.warning(
+                "already shutting down (%s ignored); SIGKILL forces", signal.Signals(sig).name
+            )
+            return
+        self.should_exit = True
+
+
+def serve(settings: Settings) -> None:
+    """`graph-agent serve`: run the API until SIGTERM/SIGINT, then drain and exit 0."""
+    app = create_app(settings)
+    config = uvicorn.Config(
+        app,
+        host=settings.api.host,
+        port=settings.api.port,
+        timeout_graceful_shutdown=int(graceful_wait_s(settings.limits.shutdown_grace_s)),
+    )
+    DrainingServer(config, app).run()

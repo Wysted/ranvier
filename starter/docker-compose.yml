@@ -8,8 +8,8 @@ x-app: &app
     # (api.auth must then be api_keys or a hook, see graph-agent.toml).
     GRAPH_AGENT_DATABASE__URL: postgresql://graph_agent:graph_agent@db:5432/graph_agent
     GRAPH_AGENT_API__HOST: 0.0.0.0
-  # Must exceed limits.shutdown_grace_s (60 s default) so SIGTERM hand-over finishes before SIGKILL.
-  stop_grace_period: 75s
+  # Must exceed limits.shutdown_grace_s (90 s default) so SIGTERM hand-over finishes before SIGKILL.
+  stop_grace_period: 105s
   # Reach an Ollama running on the host: set OLLAMA_HOST=http://host.docker.internal:11434 in .env
   # (the host's Ollama must listen on more than loopback). Docker Desktop resolves the name itself.
   extra_hosts:

@@ -1,13 +1,13 @@
 """T25: sweep (stalled jobs, orphans), prune, cron firings and the Procrastinate schema step."""
 
 import asyncio
+import dataclasses
 import signal
 import sys
 import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, TypedDict
 
@@ -16,14 +16,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from procrastinate.jobs import Status
 from procrastinate.periodic import PeriodicDeferrer
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import SecretStr
 
 from graph_agent._internal.config.manifest import CronSpec, FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import MigrationError, advisory_lock, apply_migrations
 from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.queue import (
     PROCRASTINATE_MIGRATIONS,
     ProcrastinateRunQueue,
@@ -31,13 +30,10 @@ from graph_agent._internal.queue import (
     make_app,
 )
 from graph_agent._internal.runtime.checkpointer import (
-    Checkpointer,
     create_checkpointer,
     setup_checkpointer,
 )
-from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
 from graph_agent._internal.worker import (
     FIRE_CRON,
@@ -48,6 +44,7 @@ from graph_agent._internal.worker import (
     run_sweep,
     run_worker,
 )
+from integration._resources import Resources
 
 MODULE = "t25_integration_flows"
 FLOW = "steps"
@@ -55,6 +52,7 @@ OTHER = "other"
 POLL_S = 0.02
 WAIT_S = 10.0
 SHORT_LEASE_S = 0.05
+STALE_AGE_S = 3600.0  # how far back a test moves `created_at` to make a run stale
 CRON = CronSpec(schedule="0 3 * * *", input={"source": "daily"})
 EXECUTE = "graph_agent.execute_run"
 ran: list[str] = []
@@ -81,26 +79,6 @@ def user_module() -> Iterator[None]:
     ran.clear()
     yield
     del sys.modules[MODULE]
-
-
-@dataclass
-class Budget:
-    deadline: float = float("inf")
-
-
-@dataclass
-class Resources:
-    settings: Settings
-    runs: RunsRepository | None
-    flows: FlowRegistry
-    checkpointer: Checkpointer
-    queue: RunQueue | None
-    observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
-    observability: Observability = field(
-        default_factory=lambda: Observability(metrics=LoggingMetrics())
-    )
 
 
 @pytest.fixture
@@ -221,8 +199,16 @@ async def test_stale_pending_run_is_redeferred_oldest_first(
     runs, queue = _parts(res)
     first, _ = await _new_run(res)
     second, _ = await _new_run(res)
-    await asyncio.sleep(0.2)  # older than runs.pending_redefer_s
     fresh, _ = await _new_run(res)
+    await _rows(  # age only the first two by the same delta: no timing, the order is kept
+        pool,
+        "UPDATE graph_agent.runs SET created_at = created_at - make_interval(secs => %s) "
+        "WHERE run_id = ANY(%s) RETURNING run_id",
+        STALE_AGE_S,
+        [first, second],
+    )
+    runs_cfg = res.settings.runs.model_copy(update={"pending_redefer_s": STALE_AGE_S / 2})
+    res = dataclasses.replace(res, settings=res.settings.model_copy(update={"runs": runs_cfg}))
 
     assert await run_sweep(res, runs, queue)
 
@@ -380,6 +366,35 @@ async def test_cron_firing_creates_a_run_on_a_new_thread_once(
     assert len(await _execute_jobs(pool)) == 2
 
 
+async def test_cron_retry_after_a_failed_defer_defers_the_existing_run(
+    res: Resources, pool: AsyncConnectionPool
+) -> None:
+    runs, queue = _parts(res)
+    pid = cron_periodic_id(FLOW, CRON)
+
+    class _FailingQueue(ProcrastinateRunQueue):
+        async def defer(self, *args: Any, **kwargs: Any) -> None:
+            raise ConnectionError("defer failed")
+
+    async def fire(through: ProcrastinateRunQueue) -> None:
+        await fire_cron(
+            res,
+            runs,
+            through,
+            timestamp=FIRED_AT,
+            flow=FLOW,
+            input=dict(CRON.input),
+            periodic_id=pid,
+        )
+
+    with pytest.raises(ConnectionError):  # attempt 1: the row is inserted, the defer fails
+        await fire(_FailingQueue(queue.app))
+    assert await _execute_jobs(pool) == []
+    await fire(queue)  # attempt 2: created=False, still deferred
+    assert len(await _execute_jobs(pool)) == 1
+    assert len(await _rows(pool, "SELECT run_id FROM graph_agent.runs")) == 1
+
+
 async def test_registered_cron_fires_through_the_periodic_deferrer_and_runs(
     res: Resources, pool: AsyncConnectionPool
 ) -> None:
@@ -526,6 +541,59 @@ async def test_prune_spares_a_thread_reused_after_the_idle_list_was_built(
         pool, "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at", doomed
     )
     assert [r[0] for r in rows] == ["success", "pending"]  # the 202 the client got stays valid
+
+
+class _RacedRuns(RunsRepository):
+    """The idle re-check passes, then a client reuses the thread before the row delete runs."""
+
+    async def thread_is_idle(self, thread_id: uuid.UUID, idle_for: timedelta) -> bool:
+        await self.create(thread_id=thread_id, flow=FLOW, flow_version=1, input={})
+        return True
+
+
+async def test_conditional_delete_keeps_the_rows_of_a_thread_reused_after_the_recheck(
+    res: Resources, pool: AsyncConnectionPool, history_graph: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    doomed = await _thread_with_history(
+        res, history_graph, pool, res.settings.threads.delete_after_days + 1
+    )
+
+    with caplog.at_level("WARNING", logger="graph_agent._internal.worker"):
+        await prune_threads(res, _RacedRuns(pool))
+
+    assert await _checkpoints(pool, doomed) == 0  # the shortcut window (see _delete_idle_thread)
+    rows = await _rows(
+        pool, "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at", doomed
+    )
+    assert [r[0] for r in rows] == ["success", "pending"]  # the DELETE itself spared the thread
+    assert "became active during its delete" in caplog.text
+
+
+async def test_prune_stops_at_the_first_thread_when_the_database_is_down(
+    res: Resources,
+    pool: AsyncConnectionPool,
+    history_graph: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runs, _ = _parts(res)
+    delete_after = res.settings.threads.delete_after_days + 1
+    for _ in range(3):
+        await _thread_with_history(res, history_graph, pool, delete_after)
+    calls = 0
+
+    async def adelete_thread(thread_id: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise PoolTimeout("couldn't get a connection")
+
+    monkeypatch.setattr(res.checkpointer, "adelete_thread", adelete_thread)
+
+    with caplog.at_level("WARNING", logger="graph_agent._internal.worker"):
+        await prune_threads(res, runs)
+
+    assert calls == 1
+    assert caplog.text.count("database unreachable") == 1
 
 
 async def test_prune_goes_on_after_a_thread_that_cannot_be_pruned(

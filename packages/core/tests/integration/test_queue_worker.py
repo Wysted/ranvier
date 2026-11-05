@@ -6,7 +6,6 @@ import types
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import pytest
@@ -19,14 +18,11 @@ from graph_agent._internal.config.manifest import FlowSpec
 from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
 from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
 from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
 from graph_agent._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
-from graph_agent._internal.runtime.checkpointer import Checkpointer
-from graph_agent._internal.runtime.events import RunObserver
 from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, RunQueue
 from graph_agent._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
 from graph_agent._internal.worker import run_worker
+from integration._resources import Resources
 
 MODULE = "t24_integration_flows"
 FLOW_VERSION = 1
@@ -55,26 +51,6 @@ def user_module() -> Iterator[None]:
     timeline.clear()
     yield
     del sys.modules[MODULE]
-
-
-@dataclass
-class Budget:
-    deadline: float = float("inf")
-
-
-@dataclass
-class Resources:
-    settings: Settings
-    runs: RunsRepository | None
-    flows: FlowRegistry
-    checkpointer: Checkpointer
-    queue: RunQueue | None
-    observers: list[RunObserver] = field(default_factory=list)
-    active_runs: ActiveRuns = field(default_factory=ActiveRuns)
-    shutdown_budget: Budget = field(default_factory=Budget)
-    observability: Observability = field(
-        default_factory=lambda: Observability(metrics=LoggingMetrics())
-    )
 
 
 @pytest.fixture

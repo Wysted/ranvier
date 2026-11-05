@@ -151,6 +151,10 @@ class _Budget(Protocol):
 
     deadline: float  # loop time; `math.inf` until shutdown starts
 
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Start the shared clock (idempotent: the first call counts)."""
+        ...
+
 
 class RunnerResources(Protocol):
     """The container slice `execute_run` needs (runtime cannot import bootstrap)."""
@@ -166,6 +170,36 @@ class RunnerResources(Protocol):
 
     @property
     def shutdown_budget(self) -> _Budget: ...
+
+
+def start_drain(active: ActiveRuns, budget: _Budget) -> None:
+    """Begin the shutdown: start the shared clock, then ask every attempt to drain (idempotent).
+
+    Callers stop their intake first (the worker stops fetching, the API closes admission): a claim
+    in flight is not in `active` yet, and one that lands later drains after its first superstep.
+    """
+    budget.start(asyncio.get_running_loop())
+    active.request_drain()
+
+
+def _until(budget: _Budget) -> float | None:
+    """`timeout_at` argument for the shutdown deadline (None while it has not started)."""
+    return None if math.isinf(budget.deadline) else budget.deadline
+
+
+async def settle_runs(active: ActiveRuns, budget: _Budget) -> bool:
+    """Wait until every tracked run and cleanup finished, at most until the shutdown deadline.
+
+    False: the deadline passed first; the stragglers keep running and their leases expire for the
+    sweep. Close the pools only after this returns.
+    """
+    try:
+        async with asyncio.timeout_at(_until(budget)):
+            await active.settled()
+    except TimeoutError:
+        logger.error("runs still active at the shutdown deadline; lease expiry recovers them")
+        return False
+    return True
 
 
 def metadata_event(ctx: RunContext) -> MetadataEvent:
@@ -272,6 +306,10 @@ async def execute_run(
     generator (client disconnect) or cancelling its task cancels the run: the cleanup runs in
     a separate shielded task bounded by the shutdown budget. Memory mode has no runs repository:
     raises.
+
+    While the container drains, any cancellation (`CancelledError` while waiting on `queue.get`,
+    `GeneratorExit` when closed at a `yield`, e.g. the server closing streams at its own timeout)
+    hands the run over (release + defer) instead of recording it `cancelled` (T26).
     """
     _check_modes(stream_modes)
     runs = container.runs
@@ -425,8 +463,9 @@ async def execute_run(
         # Client gone (GeneratorExit), executor cancelled, or a bug/infrastructure failure.
         if not attempt.settled:
             cancelled = isinstance(exc, (GeneratorExit, asyncio.CancelledError))
-            # A deploy/SIGTERM cancels the executor: hand the run over instead of cancelling it.
-            drain = isinstance(exc, asyncio.CancelledError) and container.active_runs.draining
+            # While draining, any cancellation (the executor's, or the server closing the stream at
+            # its own timeout) is the deploy, not a client decision: hand the run over.
+            drain = cancelled and container.active_runs.draining
             if cancelled:
                 status, error = RunStatus.CANCELLED, None
             else:
@@ -627,7 +666,8 @@ async def _settle[T](
     `settled` is set first: a cancel from here on must not make the abort notify a second time.
 
     shortcut: this step is not bounded by the shutdown budget (only `_abort` is), so a hung
-    database write can outlast it; T26 bounds `ActiveRuns.settled()` and lease expiry recovers.
+    database write can outlast it; `settle_runs` stops waiting at the deadline and lease expiry
+    recovers the run.
     """
     attempt.settled = True
     return await _shielded(container.active_runs, coro)
@@ -647,9 +687,8 @@ async def _abort(
     drain: bool,
 ) -> None:
     """Stop the attempt's tasks, then record `cancelled`/`error` (or hand the run over)."""
-    deadline = container.shutdown_budget.deadline
     try:
-        async with asyncio.timeout_at(None if math.isinf(deadline) else deadline):
+        async with asyncio.timeout_at(_until(container.shutdown_budget)):
             await _stop_tasks(*tasks)
             if drain:
                 await _hand_over(container, attempt, runs, run, ctx, token, usage)

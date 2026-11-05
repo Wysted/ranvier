@@ -26,7 +26,7 @@ from graph_agent._internal.api.dto import (
     error_response,
 )
 from graph_agent._internal.bootstrap import Container
-from graph_agent._internal.limits import TooManyRuns
+from graph_agent._internal.limits import ShuttingDown, TooManyRuns
 from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
 from graph_agent._internal.runtime.flows import check_version
 from graph_agent._internal.runtime.runner import (
@@ -221,6 +221,8 @@ async def _stream(
             await stack.enter_async_context(container.limits.admit())
         except TooManyRuns as exc:
             raise RunError(ErrorCode.TOO_MANY_RUNS, str(exc), retryable=True) from None
+        except ShuttingDown as exc:
+            raise RunError(ErrorCode.SHUTTING_DOWN, str(exc), retryable=True) from None
         run = await _insert(container, thread_id, req, pinned)
         agen = execute_run(container, run.run_id, stream_modes=req.stream_mode)
         try:
