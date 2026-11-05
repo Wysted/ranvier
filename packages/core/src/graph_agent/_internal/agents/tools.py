@@ -49,7 +49,7 @@ class ToolConfigError(ValueError):
     """Invalid tool declaration; the message names the offending tool."""
 
 
-def _has_async(tool: BaseTool) -> bool:
+def has_async(tool: BaseTool) -> bool:
     if isinstance(tool, StructuredTool):
         return tool.coroutine is not None
     return type(tool)._arun is not BaseTool._arun  # default _arun just wraps the sync _run
@@ -168,7 +168,10 @@ class ToolRegistry:
         tools_settings: Mapping[str, ToolSpec],
         limits: LimitsSettings,
         cpu_pool: CpuPool | None = None,
+        object_isolation: Mapping[int, Isolation] | None = None,
     ) -> None:
+        # isolation for already-built tool objects, by id() of the object (default "async")
+        self._object_isolation = object_isolation or {}
         self._settings = tools_settings
         self._limits = limits
         self._cpu_pool = cpu_pool
@@ -211,7 +214,14 @@ class ToolRegistry:
             with self._lock:
                 cached = self._by_object.get(id(item))
                 if cached is None:
-                    cached = (item, self._wrap(f"tool object {item.name!r}", item))
+                    cached = (
+                        item,
+                        self._wrap(
+                            f"tool object {item.name!r}",
+                            item,
+                            isolation=self._object_isolation.get(id(item), "async"),
+                        ),
+                    )
                     self._by_object[id(item)] = cached
             out.append(cached[1])
         return out
@@ -228,7 +238,7 @@ class ToolRegistry:
     ) -> BaseTool:
         """`where` labels the tool in errors: `tools.<name>` for manifest tools, else the object."""
         key = f"{where}.isolation" if target else where
-        if isolation == "async" and not _has_async(tool):
+        if isolation == "async" and not has_async(tool):
             raise ToolConfigError(f"{key}: a sync-only tool must declare isolation = 'thread'")
         if isolation == "thread" and not _has_sync(tool):
             raise ToolConfigError(f"{key}: an async-only tool cannot use isolation = 'thread'")

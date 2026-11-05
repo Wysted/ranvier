@@ -39,6 +39,29 @@ def check_version(compiled: CompiledFlow, recorded_version: int) -> None:
         )
 
 
+class FlowTargetError(TypeError):
+    """The flow target is not a StateGraph (nor a factory returning one)."""
+
+
+async def to_builder(target: object, ctx: FlowContext) -> StateGraph[Any, Any, Any, Any]:
+    """Resolve a flow target (StateGraph or sync/async factory of one) to its uncompiled builder."""
+    if not isinstance(target, StateGraph) and callable(target):
+        if inspect.iscoroutinefunction(target):
+            target = await target(ctx)
+        else:  # sync factory may do I/O: keep it off the loop (blockbuster)
+            target = await asyncio.to_thread(target, ctx)
+            if inspect.isawaitable(target):  # async __call__ objects, partials
+                target = await target
+    if isinstance(target, CompiledStateGraph):
+        raise FlowTargetError("target is a compiled graph; export the uncompiled StateGraph")
+    if not isinstance(target, StateGraph):
+        raise FlowTargetError(
+            f"target must be a StateGraph or a factory(FlowContext) returning one, "
+            f"got {type(target).__name__}"
+        )
+    return target
+
+
 class FlowRegistry:
     def __init__(
         self,
@@ -67,35 +90,19 @@ class FlowRegistry:
         try:
             # User module import is sync I/O: keep it off the event loop (blockbuster).
             target = await asyncio.to_thread(import_target, spec.target)
-            builder = await self._to_builder(key, name, target)
+            builder = await to_builder(target, self._context_factory(name))
             graph = builder.compile(checkpointer=self._checkpointer, name=name)
         except RunError:
             raise
+        except FlowTargetError as exc:  # wrong kind of target: our own message, safe to show
+            # no cause: validate treats the message as ours
+            raise _build_failed(f"flows.{name}: {exc}") from None
         except Exception as exc:  # user import/factory/compile code: fail this run, not the process
             # Client message: key + exception type only (user exceptions may carry secrets).
             raise _build_failed(f"{key}: {type(exc).__name__}") from exc
         return CompiledFlow(
             name, graph, spec.version, spec.durability, spec.timeout_s, spec.max_concurrency
         )
-
-    async def _to_builder(
-        self, key: str, name: str, target: object
-    ) -> StateGraph[Any, Any, Any, Any]:
-        if not isinstance(target, StateGraph) and callable(target):
-            if inspect.iscoroutinefunction(target):
-                target = await target(self._context_factory(name))
-            else:  # sync factory may do I/O: keep it off the loop (blockbuster)
-                target = await asyncio.to_thread(target, self._context_factory(name))
-                if inspect.isawaitable(target):  # async __call__ objects, partials
-                    target = await target
-        if isinstance(target, CompiledStateGraph):
-            raise _build_failed(f"{key} is a compiled graph; export the uncompiled StateGraph")
-        if not isinstance(target, StateGraph):
-            raise _build_failed(
-                f"{key} must be a StateGraph or a factory(FlowContext) returning one, "
-                f"got {type(target).__name__}"
-            )
-        return target
 
 
 def _build_failed(message: str) -> RunError:
