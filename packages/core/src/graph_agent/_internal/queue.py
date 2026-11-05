@@ -20,6 +20,7 @@ EXECUTE_RUN: Final = "graph_agent.execute_run"
 # Recovery defers (a `running` run handed over or re-deferred) outrank normal ones: fetch skips a
 # job while an earlier todo job of its lock has the same priority, even one waiting for a retry
 # (S4), so a recovery job would sit behind every queued run of its thread.
+NORMAL_PRIORITY: Final = 0  # Procrastinate's default
 RECOVERY_PRIORITY: Final = 1
 
 
@@ -54,7 +55,7 @@ class ProcrastinateRunQueue:
             name=EXECUTE_RUN,
             lock=str(thread_id),
             queueing_lock=str(run_id),
-            priority=RECOVERY_PRIORITY if recovery else 0,
+            priority=RECOVERY_PRIORITY if recovery else NORMAL_PRIORITY,
         )
         try:
             await job.defer_async(run_id=str(run_id))
