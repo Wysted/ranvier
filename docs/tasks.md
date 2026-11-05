@@ -14,7 +14,7 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 | T06 | `db/pool.py`, `db/migrate.py` (advisory lock), `migrations/0001_init.sql` (`runs` with partial unique index, `usage`) | 4 | T04 | sa-dev-py | [T06](tasks/T06-db-migrations.md) | done |
 | T07 | Dev `docker-compose.yml` (Postgres) and integration-test marker | 4 | T01 | sa-build-py | [T07](tasks/T07-dev-compose.md) | done |
 | T08 | `llm.py`: profiles -> `init_chat_model`, one shared httpx client per provider | 3 | T05, S3 | sa-dev-py | [T08](tasks/T08-llm-profiles.md) | todo |
-| T09 | `limits.py`: semaphores, run admission, bounded thread/process executors, loop-lag sampler | 3 | T04, S5 | sa-dev-py | [T09](tasks/T09-limits.md) | todo |
+| T09 | `limits.py`: semaphores, run admission, bounded thread/process executors, loop-lag sampler | 3 | T04, S5 | sa-dev-py | [T09](tasks/T09-limits.md) | done |
 | T10 | `observability/tracing.py` port + lazy `otlp.py` adapter | 3 | T04 | sa-dev-py | [T10](tasks/T10-tracing-port.md) | done |
 | T11 | `runtime/checkpointer.py` (AsyncPostgresSaver / InMemorySaver) + checkpointer setup in `migrate` | 4 | T06 | sa-dev-py | [T11](tasks/T11-checkpointer.md) | todo |
 | T12 | `runtime/events.py` + `runtime/context.py` (`RunContext`, `FlowContext`) | 5 | T05 | sa-dev-py | [T12](tasks/T12-events-context.md) | todo |
