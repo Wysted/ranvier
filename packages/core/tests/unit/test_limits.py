@@ -11,8 +11,8 @@ from concurrent.futures.process import BrokenProcessPool
 import pytest
 from blockbuster import blockbuster_ctx
 
-from graph_agent._internal.config.settings import LimitsSettings
-from graph_agent._internal.limits import (
+from ranvier._internal.config.settings import LimitsSettings
+from ranvier._internal.limits import (
     HANDOVER_MARGIN_S,
     CpuPool,
     Limits,

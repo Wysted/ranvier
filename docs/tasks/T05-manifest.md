@@ -22,9 +22,9 @@ Pydantic models for flows, crons, tools, MCP servers and LLM profiles/providers,
 - design.md §8 table rows LLM provider concurrency / MCP server / Tool
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/config/manifest.py
+- packages/core/src/ranvier/_internal/config/manifest.py
 - packages/core/tests/unit/config/test_manifest.py
-- packages/core/src/graph_agent/_internal/config/settings.py (add the `flows`, `tools`, `llm`, `mcp` fields and switch the root model to reject unknown top-level keys)
+- packages/core/src/ranvier/_internal/config/settings.py (add the `flows`, `tools`, `llm`, `mcp` fields and switch the root model to reject unknown top-level keys)
 Shared files: none.
 
 ## Out of scope
@@ -46,6 +46,6 @@ Shared files: none.
 
 ## Notes
 - Cron lib: check what procrastinate depends on (`croniter`?) and use the same one so schedules mean the same thing in both places; importing `croniter` here does not break contract C4 (it only restricts `procrastinate`).
-- Profile shape ported from `/home/wysted/code/agintis/src/agintis/platform/llm/profiles.py` (YAML there, TOML here).
+- Profile shape ported from `agintis/src/agintis/platform/llm/profiles.py` (YAML there, TOML here).
 - Same syntax as `langgraph.json` for targets; no `.py` file paths.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

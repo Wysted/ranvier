@@ -21,7 +21,7 @@ status: done
 - design.md §6 "HTTP API" intro (error body)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/api/auth.py
+- packages/core/src/ranvier/_internal/api/auth.py
 - packages/core/tests/unit/api/test_auth.py
 Shared files: none.
 
@@ -42,6 +42,6 @@ Shared files: none.
 
 ## Notes
 - Hook import: use `importlib` directly (a few lines); if T05's `import_target` is already merged, reuse it.
-- Reference only: `/home/wysted/code/agintis/src/agintis/platform/auth/verifier.py`, `/home/wysted/code/agintis/src/agintis/platform/http/dependencies.py`.
+- Reference only: `agintis/src/agintis/platform/auth/verifier.py`, `agintis/src/agintis/platform/http/dependencies.py`.
 - Never log keys; never put key values in settings reprs.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

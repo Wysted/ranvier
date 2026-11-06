@@ -24,7 +24,7 @@ from common import drop_db, dsn, recreate_db
 from procrastinate.schema import SchemaManager
 
 TRACK = "s4_procrastinate_migrations"
-CONTAINER = "graph-agent-db-1"
+CONTAINER = "ranvier-db-1"
 JSON_OBJECT_RE = re.compile(r"json_object\('type': ('[a-z_]+'), 'job_id': NEW\.id\)")
 
 
@@ -84,7 +84,7 @@ def dump(db: str) -> list[str]:
             CONTAINER,
             "pg_dump",
             "-U",
-            "graph_agent",
+            "ranvier",
             "-s",
             "--no-owner",
             "--exclude-table",

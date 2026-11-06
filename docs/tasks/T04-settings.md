@@ -1,6 +1,6 @@
 ---
 id: T04
-title: Root Settings (env, .env, graph-agent.toml)
+title: Root Settings (env, .env, ranvier.toml)
 part: 2
 wave: C
 depends_on: [T02]
@@ -12,7 +12,7 @@ status: done
 ---
 
 ## Goal
-One root pydantic `Settings` with nested groups and the precedence init > env > `.env` > `graph-agent.toml` > defaults.
+One root pydantic `Settings` with nested groups and the precedence init > env > `.env` > `ranvier.toml` > defaults.
 
 ## Design references
 - design.md §10 "Configuration and persistence" table (all rows)
@@ -21,7 +21,7 @@ One root pydantic `Settings` with nested groups and the precedence init > env > 
 - design.md §6 "HTTP API" admission paragraph and OD-2 row (api auth modes)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/config/settings.py
+- packages/core/src/ranvier/_internal/config/settings.py
 - packages/core/tests/unit/config/test_settings.py
 Shared files: none.
 
@@ -33,7 +33,7 @@ Shared files: none.
 ## Acceptance criteria
 - [ ] Groups with typed fields and the design defaults: `database` (url, app/checkpointer/procrastinate pool max = 5/10/5), `api` (host, port, `auth` = `none` | `api_keys` | `module:callable`, keys table by subject giving an env var NAME and optional tenant_id), `limits` (max_active_runs 32, admission_wait_s 5, sync_threads 16, cpu_workers 2, tool_timeout_s 30, shutdown_grace_s 60, loop_lag_warn_ms 100), `runs` (heartbeat_s, lease_s, max_attempts), `threads` (ttl_days, delete_after_days), `observability` (otel enabled, endpoint)
 - [ ] Values the design leaves open (`runs.*`, `threads.*`, readiness lag threshold, api port) get named constants with a one-line justification; list them in the task report so design.md can be updated
-- [ ] Env prefix `GRAPH_AGENT_`, nested delimiter `__`; `.env` path from `GRAPH_AGENT_ENV_FILE`; toml path from `GRAPH_AGENT_CONFIG` (default `./graph-agent.toml`; an explicitly set but missing path is an error, a missing default is not)
+- [ ] Env prefix `RANVIER_`, nested delimiter `__`; `.env` path from `RANVIER_ENV_FILE`; toml path from `RANVIER_CONFIG` (default `./ranvier.toml`; an explicitly set but missing path is an error, a missing default is not)
 - [ ] Precedence proven by one test per layer pair; no global cache, no `isolated` hack; nested groups reject unknown keys with a message naming the key
 - [ ] Secrets never appear in `repr(settings)` (use `SecretStr` or env-name indirection)
 - [ ] `scripts/check.sh` green
@@ -42,6 +42,6 @@ Shared files: none.
 
 ## Notes
 - Use pydantic-settings `settings_customise_sources` with `TomlConfigSettingsSource`; stdlib `tomllib`, no PyYAML (OD-6).
-- Contrast: agintis has 13 `BaseSettings` classes each loading `.env` (`/home/wysted/code/agintis/src/agintis/bootstrap/settings.py`); do not port that shape, only the field ideas.
+- Contrast: agintis has 13 `BaseSettings` classes each loading `.env` (`agintis/src/agintis/bootstrap/settings.py`); do not port that shape, only the field ideas.
 - Tests use `tmp_path` toml files and `monkeypatch.setenv`; never touch the repo `.env`.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

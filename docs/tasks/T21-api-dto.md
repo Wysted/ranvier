@@ -20,7 +20,7 @@ Pydantic request/response DTOs, the single error body, the error-code to HTTP st
 - design.md §6 "HTTP API" intro (`{code, message, retryable}`, `http.HTTPStatus`)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/api/dto.py
+- packages/core/src/ranvier/_internal/api/dto.py
 - packages/core/tests/unit/api/test_dto.py
 Shared files: none.
 
@@ -40,7 +40,7 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/src/agintis/modules/agents_catalog/domain/events.py` and `http.py` (it already imports `fastapi.sse`).
+- Port from `agintis/src/agintis/modules/agents_catalog/domain/events.py` and `http.py` (it already imports `fastapi.sse`).
 - `fastapi` is allowed only under `api` (C3). Use `http.HTTPStatus`, no numeric literals.
 - Error codes come from `runtime/runs.py` (T13).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

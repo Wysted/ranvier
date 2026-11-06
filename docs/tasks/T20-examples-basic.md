@@ -22,7 +22,7 @@ The `examples/` workspace member with a plain `hello` flow and an `approval` flo
 
 ## Scope: files this task may create or edit
 - examples/pyproject.toml
-- examples/graph-agent.toml
+- examples/ranvier.toml
 - examples/src/examples/__init__.py
 - examples/src/examples/flows/__init__.py
 - examples/src/examples/flows/hello.py
@@ -36,14 +36,14 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Out of scope
 - Research/subagent/MCP flow (T31)
 - Starter template (T34)
-- Using `graph_agent._internal` (forbidden by C2)
+- Using `ranvier._internal` (forbidden by C2)
 
 ## Acceptance criteria
-- [ ] `examples/pyproject.toml` depends on `graph-agent {workspace = true}`; `uv sync` installs it
+- [ ] `examples/pyproject.toml` depends on `ranvier {workspace = true}`; `uv sync` installs it
 - [ ] `hello`: plain `StateGraph`, no model; `approval`: a node calls `interrupt()` and a later node uses the answer; no side-effect node shares a node with `interrupt()`
-- [ ] `graph-agent.toml` registers both with versions; `GRAPH_AGENT_CONFIG=examples/graph-agent.toml graph-agent validate --offline` exits 0
-- [ ] Tests use `graph_agent.testing` only: hello result, approval pause (interrupt visible) and resume by id
-- [ ] `graph-agent run hello --memory --input ...` works from the examples dir
+- [ ] `ranvier.toml` registers both with versions; `RANVIER_CONFIG=examples/ranvier.toml ranvier validate --offline` exits 0
+- [ ] Tests use `ranvier.testing` only: hello result, approval pause (interrupt visible) and resume by id
+- [ ] `ranvier run hello --memory --input ...` works from the examples dir
 - [ ] `scripts/check.sh` green
 - [ ] import-linter contracts hold
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
@@ -51,4 +51,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Notes
 - `scripts/check.sh` (T02) must pick the new member up; if it hardcodes paths, fix it minimally and say so.
 - Keep flows tiny; they are documentation.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

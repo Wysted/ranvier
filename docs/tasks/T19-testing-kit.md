@@ -12,15 +12,15 @@ status: done
 ---
 
 ## Goal
-`graph_agent.testing` exactly as design §11 so users can unit-test flows without a database or a real model.
+`ranvier.testing` exactly as design §11 so users can unit-test flows without a database or a real model.
 
 ## Design references
-- design.md §11 "Kit shipped to users (`graph_agent.testing`)" code block and the paragraph after it
+- design.md §11 "Kit shipped to users (`ranvier.testing`)" code block and the paragraph after it
 - design.md §2 contract C2
 - design.md §6 "SSE events" (events in `FlowResult.events`)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/testing.py
+- packages/core/src/ranvier/testing.py
 - packages/core/tests/unit/test_testing.py
 Shared files: none.
 
@@ -42,5 +42,5 @@ Shared files: none.
 ## Notes
 - Beyond tasks.md deps: this needs T30 (`build_agent`, wave F) for `ctx.agent`.
 - The optional `mcp=` parameter is a small ADDITION to the §11 signature so T31's research example can be tested without a network; report it so design.md can be updated.
-- `graph_agent.testing` may import `_internal`, never the other way around (C2).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- `ranvier.testing` may import `_internal`, never the other way around (C2).
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

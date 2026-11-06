@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from graph_agent._internal.config.settings import Settings
-from graph_agent._internal.observability import tracing
-from graph_agent._internal.observability.tracing import (
+from ranvier._internal.config.settings import Settings
+from ranvier._internal.observability import tracing
+from ranvier._internal.observability.tracing import (
     LoggingMetrics,
     Observability,
     TracingError,
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-_OTLP = "graph_agent._internal.observability.otlp"
+_OTLP = "ranvier._internal.observability.otlp"
 
 
 @pytest.fixture(autouse=True)
@@ -54,8 +54,8 @@ def test_setup_runs_guard(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_disabled_never_imports_otel() -> None:
     code = (
         "import sys\n"
-        "from graph_agent._internal.config.settings import Settings\n"
-        "from graph_agent._internal.observability.tracing import setup_observability\n"
+        "from ranvier._internal.config.settings import Settings\n"
+        "from ranvier._internal.observability.tracing import setup_observability\n"
         "obs = setup_observability(Settings(_env_file=None))\n"
         "with obs.run_span(flow='f', run_id='r', thread_id='t'):\n"
         "    pass\n"
@@ -93,7 +93,7 @@ def _enabled(
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from graph_agent._internal.observability import otlp
+    from ranvier._internal.observability import otlp
 
     spans = InMemorySpanExporter()
     reader = InMemoryMetricReader()
@@ -114,11 +114,11 @@ def test_enabled_run_span_children_and_metrics(monkeypatch: pytest.MonkeyPatch) 
             RunnableLambda(lambda x: x).invoke(1)
         obs.metrics.counter("runs")
         finished = spans.get_finished_spans()
-        run = next(s for s in finished if s.name == "graph_agent.run")
+        run = next(s for s in finished if s.name == "ranvier.run")
         assert dict(run.attributes or {}) == {
-            "graph_agent.flow": "f",
-            "graph_agent.run_id": "r",
-            "graph_agent.thread_id": "t",
+            "ranvier.flow": "f",
+            "ranvier.run_id": "r",
+            "ranvier.thread_id": "t",
             "session.id": "t",
         }
         child = next(s for s in finished if s is not run)
@@ -150,6 +150,6 @@ def test_endpoint_with_signal_path_rejected(monkeypatch: pytest.MonkeyPatch, suf
 
 def test_endpoint_for_log_strips_credentials() -> None:
     pytest.importorskip("opentelemetry.sdk")
-    from graph_agent._internal.observability.otlp import endpoint_for_log
+    from ranvier._internal.observability.otlp import endpoint_for_log
 
     assert endpoint_for_log("https://u:p@host:4318/x?k=1") == "https://host:4318"

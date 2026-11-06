@@ -6,9 +6,9 @@ import pytest
 from psycopg import errors
 from psycopg_pool import AsyncConnectionPool
 
-from graph_agent._internal.db.migrate import apply_migrations
-from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.runtime.runs import (
+from ranvier._internal.db.migrate import apply_migrations
+from ranvier._internal.db.pool import open_app_pool
+from ranvier._internal.runtime.runs import (
     ClaimOutcome,
     ErrorCode,
     Run,
@@ -58,7 +58,7 @@ async def _get(repo: RunsRepository, run: Run) -> Run:
 async def _expire_lease(pool: AsyncConnectionPool, run_id: uuid.UUID) -> None:
     async with pool.connection() as conn:
         await conn.execute(
-            "UPDATE graph_agent.runs SET lease_expires_at = now() - interval '1 second' "
+            "UPDATE ranvier.runs SET lease_expires_at = now() - interval '1 second' "
             "WHERE run_id = %s",
             (run_id,),
         )
@@ -283,7 +283,7 @@ async def test_stale_pending(repo: RunsRepository, pool: AsyncConnectionPool) ->
     old, fresh = await _new(repo), await _new(repo)
     async with pool.connection() as conn:
         await conn.execute(
-            "UPDATE graph_agent.runs SET created_at = now() - interval '1 hour' WHERE run_id = %s",
+            "UPDATE ranvier.runs SET created_at = now() - interval '1 hour' WHERE run_id = %s",
             (old.run_id,),
         )
     assert await repo.stale_pending(older_than_s=60) == [(old.run_id, old.thread_id)]

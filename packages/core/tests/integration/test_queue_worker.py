@@ -15,15 +15,15 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
-from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
-from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
-from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
-from graph_agent._internal.worker import SWEEP_LOCK_KEY, run_worker
 from integration._resources import Resources
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import DatabaseSettings, RunsSettings, Settings
+from ranvier._internal.db.migrate import advisory_lock, apply_migrations
+from ranvier._internal.db.pool import open_app_pool
+from ranvier._internal.queue import ProcrastinateRunQueue, apply_procrastinate_schema, make_app
+from ranvier._internal.runtime.flows import FlowRegistry
+from ranvier._internal.runtime.runs import ClaimOutcome, RunsRepository, RunStatus
+from ranvier._internal.worker import SWEEP_LOCK_KEY, run_worker
 
 MODULE = "t24_integration_flows"
 FLOW_VERSION = 1
@@ -128,7 +128,7 @@ async def _defer(res: Resources, run_id: uuid.UUID, thread: uuid.UUID) -> None:
 
 async def _status(pool: AsyncConnectionPool, run_id: uuid.UUID) -> str:
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT status FROM graph_agent.runs WHERE run_id = %s", (run_id,))
+        cur = await conn.execute("SELECT status FROM ranvier.runs WHERE run_id = %s", (run_id,))
         row = await cur.fetchone()
         assert row is not None
         return str(row[0])
@@ -143,8 +143,8 @@ async def _until(pool: AsyncConnectionPool, run_id: uuid.UUID, want: RunStatus) 
 async def _jobs(pool: AsyncConnectionPool) -> list[tuple[Any, ...]]:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT status::text, attempts FROM graph_agent.procrastinate_jobs "
-            "WHERE task_name = 'graph_agent.execute_run' ORDER BY id"
+            "SELECT status::text, attempts FROM ranvier.procrastinate_jobs "
+            "WHERE task_name = 'ranvier.execute_run' ORDER BY id"
         )
         return await cur.fetchall()
 

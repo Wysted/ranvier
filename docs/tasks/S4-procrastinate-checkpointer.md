@@ -43,4 +43,4 @@ Shared files: none.
 ## Notes
 - Needs `docker compose up -d` from T07; use a throwaway database.
 - Procrastinate API differs between versions; record the installed one.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

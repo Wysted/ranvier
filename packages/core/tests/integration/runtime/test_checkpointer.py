@@ -10,8 +10,8 @@ from langgraph.runtime import RunControl
 from langgraph.types import Durability
 
 from drain_graph import build_drain_graph
-from graph_agent._internal.db.pool import CheckpointerPool, open_checkpointer_pool
-from graph_agent._internal.runtime.checkpointer import create_checkpointer, setup_checkpointer
+from ranvier._internal.db.pool import CheckpointerPool, open_checkpointer_pool
+from ranvier._internal.runtime.checkpointer import create_checkpointer, setup_checkpointer
 
 POOL_MAX_SIZE = 3
 
@@ -19,7 +19,7 @@ POOL_MAX_SIZE = 3
 @pytest.fixture
 async def pool(clean_database: str) -> AsyncIterator[CheckpointerPool]:
     with psycopg.connect(clean_database, autocommit=True) as conn:
-        conn.execute("CREATE SCHEMA graph_agent")  # `migrate` creates it before the saver setup
+        conn.execute("CREATE SCHEMA ranvier")  # `migrate` creates it before the saver setup
     pool = await open_checkpointer_pool(clean_database, max_size=POOL_MAX_SIZE)
     try:
         yield pool
@@ -77,4 +77,4 @@ async def test_pool_merges_url_options_with_the_pinned_search_path(clean_databas
             row = await cur.fetchone()
     finally:
         await pool.close()
-    assert row == {"sp": "graph_agent", "st": "12345ms"}
+    assert row == {"sp": "ranvier", "st": "12345ms"}

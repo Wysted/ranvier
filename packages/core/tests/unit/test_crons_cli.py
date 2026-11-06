@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from graph_agent._internal.cli import main
-from graph_agent._internal.config.manifest import CronSpec
-from graph_agent._internal.worker import cron_periodic_id
+from ranvier._internal.cli import main
+from ranvier._internal.config.manifest import CronSpec
+from ranvier._internal.worker import cron_periodic_id
 
 MAX_PERIODIC_ID = 128  # Procrastinate's periodic_id column
 
@@ -24,9 +24,9 @@ target = "pkg.mod:beta"
 
 @pytest.fixture
 def toml_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "graph-agent.toml"
+    path = tmp_path / "ranvier.toml"
     monkeypatch.chdir(tmp_path)  # no stray .env
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", str(path))
+    monkeypatch.setenv("RANVIER_CONFIG", str(path))
     return path
 
 

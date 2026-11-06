@@ -2,7 +2,7 @@
 
 Run on 2026-11-05 at commit `fffab21` (main plus T35 bench files).
 
-Exit criterion used: tasks.md leaves "agintis flows run unchanged on graph-agent" undecided, so
+Exit criterion used: tasks.md leaves "agintis flows run unchanged on ranvier" undecided, so
 this check runs the `examples/` flows (`hello`, `approval`, `research`). The agintis flows were
 not run.
 
@@ -57,8 +57,8 @@ Reading:
 | `run --memory approval` | PASS | `interrupt` event then `end` status `interrupted` |
 | `run --memory research` | NOT RUNNABLE | needs Ollama (`qwen3:4b`, not running here) and an MCP server (the manifest URL is a placeholder: `flow_build_failed`, `McpSourceError`). The flow is covered by `examples/tests/test_research.py` with fakes (inside `check.sh`) |
 | `run` on Postgres (not asked, extra) | PASS | `migrate`, `run hello`, `run approval` (interrupt) and `run approval --resume true` ended `success` on a throwaway database |
-| Clean wheel install | PASS | `uv build --package graph-agent --wheel`, installed in a fresh venv outside the repo: `graph-agent --help`, `import graph_agent, graph_agent.testing`, migrations SQL packaged, `migrate` applied `[1, 2]`; `langchain_postgres` and `deepagents` absent (extras do not leak). `scripts/ci-install-check.sh` also passes (members alone, git subdirectory install) |
-| Starter renders | PASS | `uvx copier copy --vcs-ref HEAD` with `graph_agent_repo` pointing at a local clone with a throwaway tag `v0.1.0-exitcheck` (the real repo was not tagged) |
+| Clean wheel install | PASS | `uv build --package ranvier --wheel`, installed in a fresh venv outside the repo: `ranvier --help`, `import ranvier, ranvier.testing`, migrations SQL packaged, `migrate` applied `[1, 2]`; `langchain_postgres` and `deepagents` absent (extras do not leak). `scripts/ci-install-check.sh` also passes (members alone, git subdirectory install) |
+| Starter renders | PASS | `uvx copier copy --vcs-ref HEAD` with `ranvier_repo` pointing at a local clone with a throwaway tag `v0.1.0-exitcheck` (the real repo was not tagged) |
 | Rendered starter `uv lock && uv sync` + `scripts/check.sh` | PASS | ruff, ruff format, mypy strict, import-linter (1 contract kept), 1 test passed |
 | Full compose stack (db, migrate, api, worker) | PASS with caveats | built the starter image, `migrate` exited 0, api `/healthz` and `/readyz` 200, `/flows` 200 with the API key and 401 without, `POST /runs` was executed by the worker (ended `error` / `ConnectError` because Ollama is not running, as expected), `stop api worker` took 1 s and both exited 0 |
 
@@ -70,7 +70,7 @@ How the compose stack was brought up (so the result can be repeated):
   (`down -v --rmi local`); the platform's compose was not touched.
 - The container cannot reach a host path, and `uv` accepts only `https`, `ssh` and `file` git URLs.
   So the throwaway clone was copied into the build context, the pin in `pyproject.toml` and
-  `uv.lock` was rewritten to `file:///gitsrv/graph-agent.git`, and one line `COPY gitsrv /gitsrv`
+  `uv.lock` was rewritten to `file:///gitsrv/ranvier.git`, and one line `COPY gitsrv /gitsrv`
   was added to the rendered Dockerfile. Nothing else differs from the template output.
 
 Exact override (`<dummy.vars>` is a file outside the repo, not named `.env*`; the project dir is the
@@ -98,11 +98,11 @@ docker compose -p t35exit -f docker-compose.yml -f override.yml down -v --rmi lo
 ```
 
 Exact pin rewrite (run in the rendered starter after `uv lock`; `$CLONE` is the throwaway clone
-tagged `v0.1.0-exitcheck`, rendered with `graph_agent_repo=file://$CLONE`):
+tagged `v0.1.0-exitcheck`, rendered with `ranvier_repo=file://$CLONE`):
 
 ```bash
-mkdir gitsrv && cp -a "$CLONE" gitsrv/graph-agent.git
-sd -F "$CLONE" "/gitsrv/graph-agent.git" pyproject.toml uv.lock
+mkdir gitsrv && cp -a "$CLONE" gitsrv/ranvier.git
+sd -F "$CLONE" "/gitsrv/ranvier.git" pyproject.toml uv.lock
 sd '^COPY pyproject.toml uv.lock \./' 'COPY gitsrv /gitsrv
 COPY pyproject.toml uv.lock ./' Dockerfile
 ```
@@ -116,8 +116,8 @@ None failed. Open points (2 is a pre-condition for the tag):
    template (a permission rule blocks `.env*` files for agents; the user adds it). Without it `serve` in the compose stack stops at
    `api.keys.admin: env var 'API_KEY_ADMIN' is unset or empty` (correct, fail-loud behavior, but the
    README points to a missing file). Task T34.
-3. The rendered starter cannot be built or locked without a remote git URL for graph-agent
-   (https/ssh/file only). The git host is undecided, so a platform CI job that renders the starter
+3. The rendered starter cannot be built or locked without a remote git URL for ranvier
+   (https/ssh/file only). The repo is on GitHub (github.com/Wysted/ranvier) but was not tagged at the time, so a platform CI job that renders the starter
    needs a local-clone workaround like the one above. Follow-up for T34/T03 (CI), as noted in the
    T35 brief.
 4. `pytest` run from `examples/` fails with "async def functions are not natively supported": the

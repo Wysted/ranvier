@@ -1,12 +1,12 @@
 [project]
-name = "graph-agent-examples"
+name = "ranvier-examples"
 version = "0.0.0"
-description = "Example flows for graph-agent (not published)"
+description = "Example flows for ranvier (not published)"
 requires-python = ">=3.13"
-dependencies = ["graph-agent"]
+dependencies = ["ranvier"]
 
 [tool.uv.sources]
-graph-agent = { workspace = true }
+ranvier = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

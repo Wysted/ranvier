@@ -1,7 +1,7 @@
 import pytest
 
 from examples.flows.approval import graph
-from graph_agent.testing import flow_context, run_flow
+from ranvier.testing import flow_context, run_flow
 
 
 @pytest.mark.parametrize(

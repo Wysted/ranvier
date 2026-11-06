@@ -1,13 +1,13 @@
 import pytest
 from fastapi import FastAPI, Request
 
-from graph_agent._internal.api.auth import (
+from ranvier._internal.api.auth import (
     AuthError,
     Principal,
     build_authenticator,
     require_principal,
 )
-from graph_agent._internal.config.settings import ApiKeyRef, ApiSettings
+from ranvier._internal.config.settings import ApiKeyRef, ApiSettings
 
 
 def _request(authorization: str | None = None) -> Request:

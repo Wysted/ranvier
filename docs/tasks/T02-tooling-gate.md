@@ -43,8 +43,8 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/scripts/check.sh` and the `[tool.importlinter]` block of `/home/wysted/code/agintis/pyproject.toml` (17 contracts there, 6 here).
+- Port from `agintis/scripts/check.sh` and the `[tool.importlinter]` block of `agintis/pyproject.toml` (17 contracts there, 6 here).
 - Layer syntax for C1: `cli | api | worker` > `bootstrap` > `runtime` > `agents` > `llm | limits | usage | observability | queue` > `db | config` (siblings independent).
 - Tests live in `packages/core/tests/{unit,integration}/` mirroring the `_internal` tree.
 - Config only: no source code beyond the conftest fixture.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

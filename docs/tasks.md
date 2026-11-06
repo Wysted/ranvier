@@ -1,4 +1,4 @@
-# graph-agent v0.1 tasks
+# ranvier v0.1 tasks
 
 Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Each task: implement -> `sa-review-py` -> fixes in a separate commit -> `/ponytail-audit` on what it touched. Parallel tasks need isolated git worktrees (one writer per worktree); otherwise run them in the listed order.
 
@@ -6,10 +6,10 @@ Source: `docs/design.md` section 14 (parts 1-12) split into reviewable tasks. Ea
 
 | ID | Task | Part | Depends on | Owner | Brief | Status |
 |----|------|------|------------|-------|-------|--------|
-| T01 | `git init`, `.gitignore`, uv workspace root, `packages/core/pyproject.toml` (deps, extras `[openai]` `[anthropic]` `[ollama]` `[otel]`), empty `graph_agent` with `py.typed` | 1 | - | sa-build-py | [T01](tasks/T01-workspace-skeleton.md) | done |
+| T01 | `git init`, `.gitignore`, uv workspace root, `packages/core/pyproject.toml` (deps, extras `[openai]` `[anthropic]` `[ollama]` `[otel]`), empty `ranvier` with `py.typed` | 1 | - | sa-build-py | [T01](tasks/T01-workspace-skeleton.md) | done |
 | T02 | Tooling: ruff (with `banned-api`), mypy strict, import-linter contracts C1-C6, pytest config, `blockbuster`, `scripts/check.sh` | 1 | T01 | sa-build-py | [T02](tasks/T02-tooling-gate.md) | done |
 | T03 | CI: clean install, `check.sh`, git-subdirectory install check | 1 | T02 | sa-build-py | [T03](tasks/T03-ci-workflow.md) | done |
-| T04 | `config/settings.py`: root `Settings` (env + `.env` + `graph-agent.toml`, prefix `GRAPH_AGENT_`) | 2 | T02 | sa-dev-py | [T04](tasks/T04-settings.md) | done |
+| T04 | `config/settings.py`: root `Settings` (env + `.env` + `ranvier.toml`, prefix `RANVIER_`) | 2 | T02 | sa-dev-py | [T04](tasks/T04-settings.md) | done |
 | T05 | `config/manifest.py`: flows, tools, crons, mcp, profiles models; lazy `module:object` import | 2 | T04 | sa-dev-py | [T05](tasks/T05-manifest.md) | done |
 | T06 | `db/pool.py`, `db/migrate.py` (advisory lock), `migrations/0001_init.sql` (`runs` with partial unique index, `usage`) | 4 | T04 | sa-dev-py | [T06](tasks/T06-db-migrations.md) | done |
 | T07 | Dev `docker-compose.yml` (Postgres) and integration-test marker | 4 | T01 | sa-build-py | [T07](tasks/T07-dev-compose.md) | done |
@@ -108,4 +108,4 @@ graph LR
   T31 & T34 --> T35
 ```
 
-T35 note: design.md proposes "agintis flows run unchanged on graph-agent" as the exit check; that criterion is not decided yet. Until it is, T35 runs the `examples/` flows under `bench/`.
+T35 note: design.md proposes "agintis flows run unchanged on ranvier" as the exit check; that criterion is not decided yet. Until it is, T35 runs the `examples/` flows under `bench/`.

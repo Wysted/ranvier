@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from graph_agent._internal.db.migrate import apply_migrations
-from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.runtime.context import RunContext
-from graph_agent._internal.usage import Counts, UsageRepository
+from ranvier._internal.db.migrate import apply_migrations
+from ranvier._internal.db.pool import open_app_pool
+from ranvier._internal.runtime.context import RunContext
+from ranvier._internal.usage import Counts, UsageRepository
 
 
 @pytest.fixture

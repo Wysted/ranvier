@@ -42,4 +42,4 @@ Shared files: none.
 ## Notes
 - Use `uv run --python 3.14` / `3.13` with `--with` packages; do not change the project's Python constraints.
 - Avoid 3.14.0-3.14.4 (GC regression).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

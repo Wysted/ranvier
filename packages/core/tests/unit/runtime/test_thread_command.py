@@ -6,8 +6,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from graph_agent._internal.runtime.runner import check_thread_command, pending_interrupts
-from graph_agent._internal.runtime.runs import ErrorCode, RunError
+from ranvier._internal.runtime.runner import check_thread_command, pending_interrupts
+from ranvier._internal.runtime.runs import ErrorCode, RunError
 
 I1, I2, FOREIGN = "a" * 32, "b" * 32, "c" * 32  # LangGraph ids are 32 hex chars
 

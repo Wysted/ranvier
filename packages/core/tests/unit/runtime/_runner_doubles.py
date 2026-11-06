@@ -16,24 +16,24 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from graph_agent._internal.bootstrap import ShutdownBudget
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import RunsSettings, Settings
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
-from graph_agent._internal.runtime.checkpointer import Checkpointer
-from graph_agent._internal.runtime.context import RunContext
-from graph_agent._internal.runtime.events import (
+from ranvier._internal.bootstrap import ShutdownBudget
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import RunsSettings, Settings
+from ranvier._internal.observability.tracing import LoggingMetrics, Observability
+from ranvier._internal.runtime.checkpointer import Checkpointer
+from ranvier._internal.runtime.context import RunContext
+from ranvier._internal.runtime.events import (
     RunEvent,
     RunOutcome,
     UsageTotals,
 )
-from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import (
+from ranvier._internal.runtime.flows import FlowRegistry
+from ranvier._internal.runtime.runner import (
     ActiveRuns,
     RunQueue,
     execute_run,
 )
-from graph_agent._internal.runtime.runs import (
+from ranvier._internal.runtime.runs import (
     Claim,
     ClaimOutcome,
     Run,

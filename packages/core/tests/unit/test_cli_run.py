@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_agent._internal.cli import EXIT_USAGE, main
+from ranvier._internal.cli import EXIT_USAGE, main
 
 MODULE_NAME = "t18_user_flows"
 MODULE = """
@@ -66,11 +66,11 @@ type Events = list[dict[str, object]]
 @pytest.fixture(autouse=True)
 def _manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / f"{MODULE_NAME}.py").write_text(MODULE)
-    (tmp_path / "graph-agent.toml").write_text(FLOWS.replace("MOD", MODULE_NAME))
+    (tmp_path / "ranvier.toml").write_text(FLOWS.replace("MOD", MODULE_NAME))
     monkeypatch.delitem(sys.modules, MODULE_NAME, raising=False)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.chdir(tmp_path)  # no stray .env
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", str(tmp_path / "graph-agent.toml"))
+    monkeypatch.setenv("RANVIER_CONFIG", str(tmp_path / "ranvier.toml"))
 
 
 @pytest.fixture
@@ -123,7 +123,7 @@ def test_memory_timeout_is_an_error_event(run: Callable[..., tuple[int, Events]]
 def test_missing_api_key_env_is_a_one_line_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    manifest = tmp_path / "graph-agent.toml"
+    manifest = tmp_path / "ranvier.toml"
     manifest.write_text(
         manifest.read_text()
         + '[llm.profiles.p]\nprovider = "openai"\nmodel = "m"\napi_key_env = "T18_NO_SUCH_KEY"\n'
@@ -181,8 +181,8 @@ def test_resume_needs_thread_and_database(
 def test_unserializable_event_becomes_internal_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from graph_agent._internal.cli import _emit
-    from graph_agent._internal.runtime.events import ValuesEvent
+    from ranvier._internal.cli import _emit
+    from ranvier._internal.runtime.events import ValuesEvent
 
     assert _emit(ValuesEvent((), object())) == 1
     captured = capsys.readouterr()

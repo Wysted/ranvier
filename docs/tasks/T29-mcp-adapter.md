@@ -18,10 +18,10 @@ The `McpToolSource` port and an adapter that turns MCP server tools into LangCha
 - design.md "Decisions at a glance" row MCP
 - design.md §7 table rows "MCP port", "MCP results", "MCP transport" and the `[mcp.servers.github]` block
 - design.md §8 row "MCP server"
-- design.md §14 open check on MCP and `.claude/agents/_shared/decisions.md` (last MCP line)
+- design.md §14 open check on MCP and the decision log (last MCP line)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/mcp.py
+- packages/core/src/ranvier/_internal/agents/mcp.py
 - packages/core/tests/unit/agents/test_mcp.py (result mapping, schema conversion)
 - packages/core/tests/integration/agents/test_mcp_server.py (in-process FastMCP over Streamable HTTP, no external network)
 Shared files: none.
@@ -47,5 +47,5 @@ Shared files: none.
 - `mcp` and `httpx2` may be imported only in this file (ruff banned-api); tests are excepted.
 - Never place secrets in config values; headers come from the environment at connect time.
 - tasks.md lists no dependency on T05, but the `mcp` server settings model is T05's; it is in an earlier wave.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From S2 (orchestrator, overrides any "entered in the passed AsyncExitStack" wording above): each `mcp.Client` is entered and held by its own owner task per server; the composition root only registers the owner's stop. Use the 502-converting httpx2 transport, reconnect on the next call under a per-server lock (owner task dead or `INVALID_REQUEST` stale session), never retry the failed call. Port from `bench/spikes/S2/s2.py` (`OwnedClient`) and add the missing lock. Tests: in-process `MCPServer` via `session_manager.run()` + base URL with explicit port; restart test needs uvicorn on a local port.

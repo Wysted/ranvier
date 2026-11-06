@@ -20,7 +20,7 @@ The platform-owned global limits: run admission semaphore, bounded default threa
 - design.md §14 open check on `ProcessPoolExecutor.kill_workers`
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/limits.py
+- packages/core/src/ranvier/_internal/limits.py
 - packages/core/tests/unit/test_limits.py
 Shared files: none.
 
@@ -44,4 +44,4 @@ Shared files: none.
 - Read `docs/spikes/S5.md` first.
 - Everything is created once in the composition root; no module-level singletons.
 - Expose cheap read-only stats (active runs, waiters, executor occupancy) for T33 to publish; do not depend on OTel here.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

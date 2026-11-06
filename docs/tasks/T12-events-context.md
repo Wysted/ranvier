@@ -21,12 +21,12 @@ The transport-agnostic run event types and the mapping from LangGraph v2 stream 
 - design.md §13 rows "Run context" and "Event DTOs and SSE"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/events.py
-- packages/core/src/graph_agent/_internal/runtime/context.py
+- packages/core/src/ranvier/_internal/runtime/events.py
+- packages/core/src/ranvier/_internal/runtime/context.py
 - packages/core/tests/unit/runtime/test_events.py
 - packages/core/tests/unit/runtime/test_context.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/__init__.py (append `RunContext`, `FlowContext` to imports and `__all__`; T27 appends `AgentSpec` in the same wave)
+- packages/core/src/ranvier/__init__.py (append `RunContext`, `FlowContext` to imports and `__all__`; T27 appends `AgentSpec` in the same wave)
 
 ## Out of scope
 - Wire DTOs and SSE encoding (T21)
@@ -45,8 +45,8 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port the event mapping from `/home/wysted/code/agintis/src/agintis/agent_kit/runtime/langgraph_runner.py` and `events.py`; drop chat-specific events and `STREAM_TOKENS_TAG` (OD-8: token streaming is `stream_mode=messages`).
+- Port the event mapping from `agintis/src/agintis/agent_kit/runtime/langgraph_runner.py` and `events.py`; drop chat-specific events and `STREAM_TOKENS_TAG` (OD-8: token streaming is `stream_mode=messages`).
 - The exact v2 part shape is something S1 also records; if `docs/spikes/S1.md` already exists, use it, otherwise check the installed langgraph.
 - Error codes are NOT defined here: T13 owns the `ErrorCode` enum in `runs.py` (T12 and T13 are in the same wave).
 - langgraph/langchain imports are allowed in `runtime` (C5).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -10,8 +10,8 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
-from graph_agent import AgentSpec, FlowContext
-from graph_agent.testing import EndEvent, FakeChatModel, InterruptEvent, flow_context, run_flow
+from ranvier import AgentSpec, FlowContext
+from ranvier.testing import EndEvent, FakeChatModel, InterruptEvent, flow_context, run_flow
 
 
 class _State(TypedDict, total=False):

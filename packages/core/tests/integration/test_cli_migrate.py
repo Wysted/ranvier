@@ -6,7 +6,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from graph_agent._internal.cli import main
+from ranvier._internal.cli import main
 
 MODULE_NAME = "t18_db_flows"
 MODULE = """
@@ -37,12 +37,12 @@ THREAD = "8f5c3b52-5d3f-4c0e-9b53-0e0f3b1c2d4a"
 @pytest.fixture
 def cli_env(clean_database: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     (tmp_path / f"{MODULE_NAME}.py").write_text(MODULE)
-    (tmp_path / "graph-agent.toml").write_text(FLOWS.replace("MOD", MODULE_NAME))
+    (tmp_path / "ranvier.toml").write_text(FLOWS.replace("MOD", MODULE_NAME))
     monkeypatch.delitem(sys.modules, MODULE_NAME, raising=False)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.chdir(tmp_path)  # no stray .env
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", str(tmp_path / "graph-agent.toml"))
-    monkeypatch.setenv("GRAPH_AGENT_DATABASE__URL", clean_database)
+    monkeypatch.setenv("RANVIER_CONFIG", str(tmp_path / "ranvier.toml"))
+    monkeypatch.setenv("RANVIER_DATABASE__URL", clean_database)
     return clean_database
 
 
@@ -50,7 +50,7 @@ def _tables(url: str) -> set[str]:
     with psycopg.connect(url) as conn:
         rows = conn.execute(
             "SELECT table_schema || '.' || table_name FROM information_schema.tables "
-            "WHERE table_schema = 'graph_agent'"
+            "WHERE table_schema = 'ranvier'"
         ).fetchall()
     return {row[0] for row in rows}
 
@@ -62,9 +62,9 @@ def test_migrate_applies_then_is_idempotent(
     first = capsys.readouterr().out
     assert "migrations: applied [1" in first and "checkpointer: ready" in first
     tables = _tables(cli_env)
-    assert {"graph_agent.runs", "graph_agent.schema_version", "graph_agent.checkpoints"} <= tables
+    assert {"ranvier.runs", "ranvier.schema_version", "ranvier.checkpoints"} <= tables
     with psycopg.connect(cli_env) as conn:  # saver tables live in our schema, not the role's
-        row = conn.execute("SELECT to_regclass('graph_agent.checkpoints')").fetchone()
+        row = conn.execute("SELECT to_regclass('ranvier.checkpoints')").fetchone()
     assert row is not None and row[0] is not None
 
     assert main(["migrate"]) == 0
@@ -76,7 +76,7 @@ def test_migrate_pins_our_schema_whatever_the_url_search_path_says(
     cli_env: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The role's "$user" would hide a missing pin: a URL forcing `public` exposes it."""
-    monkeypatch.setenv("GRAPH_AGENT_DATABASE__URL", f"{cli_env}?options=-c%20search_path%3Dpublic")
+    monkeypatch.setenv("RANVIER_DATABASE__URL", f"{cli_env}?options=-c%20search_path%3Dpublic")
     assert main(["migrate"]) == 0
     capsys.readouterr()
     with psycopg.connect(cli_env) as conn:
@@ -85,9 +85,9 @@ def test_migrate_pins_our_schema_whatever_the_url_search_path_says(
             "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
         ).fetchall()
     by_schema = {schema: {name for s, name in rows if s == schema} for schema, _ in rows}
-    assert set(by_schema) == {"graph_agent"}, by_schema.keys()
+    assert set(by_schema) == {"ranvier"}, by_schema.keys()
     assert {"runs", "checkpoints", "procrastinate_jobs", "procrastinate_migrations"} <= by_schema[
-        "graph_agent"
+        "ranvier"
     ]
 
 
@@ -109,7 +109,7 @@ def test_run_persists_then_resumes_on_the_same_thread(
 
     with psycopg.connect(cli_env) as conn:
         statuses = conn.execute(
-            "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at",
+            "SELECT status FROM ranvier.runs WHERE thread_id = %s ORDER BY created_at",
             (THREAD,),
         ).fetchall()
     assert [s[0] for s in statuses] == ["interrupted", "success"]
@@ -121,7 +121,7 @@ def test_run_rejects_a_thread_of_another_flow(
     assert main(["migrate"]) == 0
     assert main(["run", "asks", "--thread", THREAD, "--input", "{}"]) == 0
     capsys.readouterr()
-    (tmp_path / "graph-agent.toml").write_text(
+    (tmp_path / "ranvier.toml").write_text(
         FLOWS.replace("MOD", MODULE_NAME)
         + '[flows.other]\ntarget = "MOD:g"\n'.replace("MOD", MODULE_NAME)
     )
@@ -154,7 +154,7 @@ def test_run_on_a_busy_thread_cancels_its_row(
     assert main(["migrate"]) == 0
     with psycopg.connect(cli_env, autocommit=True) as conn:
         conn.execute(
-            "INSERT INTO graph_agent.runs "
+            "INSERT INTO ranvier.runs "
             "(run_id, thread_id, flow, flow_version, status, input, lease_owner, lease_expires_at) "
             "VALUES (gen_random_uuid(), %s, 'asks', 1, 'running', '{}', 'w', "
             "now() + interval '1 hour')",
@@ -166,7 +166,7 @@ def test_run_on_a_busy_thread_cancels_its_row(
     assert last["data"]["code"] == "thread_busy"
     with psycopg.connect(cli_env) as conn:
         rows = conn.execute(
-            "SELECT status FROM graph_agent.runs WHERE thread_id = %s AND status <> 'running'",
+            "SELECT status FROM ranvier.runs WHERE thread_id = %s AND status <> 'running'",
             (THREAD,),
         ).fetchall()
     assert [r[0] for r in rows] == ["cancelled"]

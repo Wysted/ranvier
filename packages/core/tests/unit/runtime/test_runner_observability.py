@@ -8,20 +8,20 @@ from typing import Any
 
 import pytest
 
-from graph_agent._internal.observability.tracing import (
+from ranvier._internal.observability.tracing import (
     ATTR_FLOW,
     ATTR_RUN_ID,
     ATTR_THREAD_ID,
     Observability,
 )
-from graph_agent._internal.runtime import runner
-from graph_agent._internal.runtime.runner import (
+from ranvier._internal.runtime import runner
+from ranvier._internal.runtime.runner import (
     METRIC_ATTEMPT_SECONDS,
     METRIC_ATTEMPTS,
     METRIC_CANCELLED_BEFORE_START,
     execute_run,
 )
-from graph_agent._internal.runtime.runs import ClaimOutcome
+from ranvier._internal.runtime.runs import ClaimOutcome
 from unit.runtime._runner_doubles import _events, _resources, _run
 
 # Like OTel's context: a token is only valid in the context that set it.

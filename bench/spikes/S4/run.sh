@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../../.."
 S=bench/spikes/S4
 echo "=== versions ==="
 uv run python -c "import importlib.metadata as m, sys; print(sys.version.split()[0], {p: m.version(p) for p in ['procrastinate', 'croniter', 'langgraph', 'langgraph-checkpoint', 'langgraph-checkpoint-postgres', 'psycopg', 'psycopg-pool']})"
-docker exec graph-agent-db-1 psql -U graph_agent -d graph_agent -tAc "show server_version"
+docker compose exec -T db psql -U ranvier -d ranvier -tAc "show server_version"
 echo "=== 1. periodic (TZ set to a non-UTC zone on purpose) ==="
 TZ=America/Argentina/Buenos_Aires uv run python "$S/periodic_check.py"
 echo "=== 2. stalled jobs ==="

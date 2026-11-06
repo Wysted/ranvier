@@ -21,7 +21,7 @@ One `open_container(settings, *, memory=False)` async context manager that build
 - design.md §7 table rows "Tool registry" and "MCP port"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/bootstrap.py
+- packages/core/src/ranvier/_internal/bootstrap.py
 - packages/core/tests/unit/test_bootstrap.py
 - packages/core/tests/integration/test_bootstrap.py
 Shared files: none.
@@ -44,10 +44,10 @@ Shared files: none.
 
 ## Notes
 - Additional dependencies not listed in tasks.md: T27 (tool registry) and T29 (MCP source) are in an earlier wave and must be wired here, because T30 (same wave) must not edit this file. Add them to your reading list.
-- Port from `/home/wysted/code/agintis/src/agintis/bootstrap/container.py` (drop RAG, ingest, tenancy wiring).
+- Port from `agintis/src/agintis/bootstrap/container.py` (drop RAG, ingest, tenancy wiring).
 - Constructors take collaborators explicitly; no module-level globals.
 - Metrics gauge sources (loop lag, executor occupancy, pool stats, semaphore waiters) are registered with the metrics handle here as callables; T33 only adds runner-level metrics.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From the T10 review (orchestrator): `Observability.shutdown()` blocks (up to ~2x10 s with the collector down): call it via `asyncio.to_thread` and count it inside `limits.shutdown_grace_s`.
 - From the T09 review (orchestrator): enter `CpuPool` via its async `start()` (warm-up in a thread) in the AsyncExitStack BEFORE run admission opens; entrypoints using it need the `if __name__ == "__main__"` guard (forkserver re-imports __main__).
 - From T08 (orchestrator decision): `LlmRegistry.model()` does sync I/O on first use per provider (httpx2 client: package metadata, SSL context) that blockbuster rejects in a coroutine. The composition root pre-creates every configured profile model in a thread (`await asyncio.to_thread(...)`) at startup, so `model()` is a pure cache read afterwards; register `registry.aclose()` in the AsyncExitStack.

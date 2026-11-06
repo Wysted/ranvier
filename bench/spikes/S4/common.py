@@ -8,11 +8,11 @@ from procrastinate import App, PsycopgConnector
 HOST = os.environ.get("S4_PGHOST", "127.0.0.1")
 PORT = os.environ.get("S4_PGPORT", "25432")
 # Dev-only compose credentials (docker-compose.yml); never real secrets.
-ADMIN_DSN = f"postgresql://graph_agent:graph_agent@{HOST}:{PORT}/graph_agent"
+ADMIN_DSN = f"postgresql://ranvier:ranvier@{HOST}:{PORT}/ranvier"
 
 
 def dsn(db: str) -> str:
-    return f"postgresql://graph_agent:graph_agent@{HOST}:{PORT}/{db}"
+    return f"postgresql://ranvier:ranvier@{HOST}:{PORT}/{db}"
 
 
 def recreate_db(db: str) -> str:

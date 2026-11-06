@@ -1,7 +1,7 @@
 [project]
-name = "graph-agent-workspace"
+name = "ranvier-workspace"
 version = "0.0.0"
-description = "uv workspace root for graph-agent (not published)"
+description = "uv workspace root for ranvier (not published)"
 requires-python = ">=3.13"
 dependencies = []
 
@@ -9,13 +9,13 @@ dependencies = []
 members = ["packages/core", "examples"]
 
 [tool.uv.sources]
-graph-agent = { workspace = true }
-graph-agent-examples = { workspace = true }
+ranvier = { workspace = true }
+ranvier-examples = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "graph-agent[openai,anthropic,ollama,otel]",
-    "graph-agent-examples",
+    "ranvier[openai,anthropic,ollama,otel]",
+    "ranvier-examples",
     "blockbuster>=1.5",
     "import-linter>=2.15",
     "mypy>=2.4.0",

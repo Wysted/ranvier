@@ -79,7 +79,7 @@ class Recorder(AsyncCallbackHandler):
 
 
 AGENT_KEY = (
-    "graph_agent_agent"  # candidate platform-owned key on the model's own metadata
+    "ranvier_agent"  # candidate platform-owned key on the model's own metadata
 )
 
 

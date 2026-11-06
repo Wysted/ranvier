@@ -21,11 +21,11 @@ The Procrastinate app factory, deferral by task name, and the worker task that r
 - design.md §8 rows "Run admission" (worker concurrency) and "Postgres connections"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/queue.py
-- packages/core/src/graph_agent/_internal/worker.py
+- packages/core/src/ranvier/_internal/queue.py
+- packages/core/src/ranvier/_internal/worker.py
 - packages/core/tests/integration/test_queue_worker.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/bootstrap.py (append only: build the Procrastinate app, set `container.queue` as a `RunQueue`; T33 appends in the same wave)
+- packages/core/src/ranvier/_internal/bootstrap.py (append only: build the Procrastinate app, set `container.queue` as a `RunQueue`; T33 appends in the same wave)
 
 ## Out of scope
 - Sweep, prune, cron tasks and the `worker`/`crons` commands (T25)
@@ -44,6 +44,6 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Read `docs/spikes/S4.md` first (periodic API, stalled jobs, version-specific API).
 - Contract C4: `procrastinate` imported only in `queue` and `worker`.
 - Worker processes build their own container; do not share objects with the API process.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From the T13 review (orchestrator decision, design §5): defer `execute_run` with `lock=thread_id` and `queueing_lock=run_id`, ignoring `AlreadyEnqueued`.
 - From S4 (orchestrator): defer `execute_run` by name with `lock=thread_id`, `queueing_lock=run_id`, catch `AlreadyEnqueued`; never set `priority=` (FIFO per lock only with uniform priority); leave headroom in the `thread_busy` retry `max_attempts` (stalled requeues spend the same counter; `max_attempts=N` = N+1 executions) and keep its backoff short (a job waiting for retry blocks later jobs of the same thread). Never read the Procrastinate job status as the run status (a job can be `failed` while its run is `success`); W1's own `finish_job` may raise 'not in doing or todo' after a sweep closed its job: expected, decide whether to filter or document that log. Worker LISTEN connection is outside the pool (+1 in `log_connection_budget`).

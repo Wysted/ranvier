@@ -18,7 +18,7 @@ Verify with the installed `mcp` 2.x how one `mcp.Client` per server behaves for 
 - design.md §14 "Open checks" first row (MCP)
 - design.md §7 table rows "MCP port", "MCP results"
 - design.md "Decisions at a glance" row MCP
-- .claude/agents/_shared/decisions.md last MCP line
+- the decision log, last MCP line
 
 ## Scope: files this task may create or edit
 - docs/spikes/S2.md (findings)
@@ -44,4 +44,4 @@ Shared files: none.
 ## Notes
 - Record the real `mcp.Client` API names; T29 will rely on them.
 - No external servers; everything local.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -21,7 +21,7 @@ Build `AsyncPostgresSaver` over the checkpointer pool (or `InMemorySaver`), with
 - design.md §14 open check "`AsyncPostgresSaver` serializes writes per instance"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/checkpointer.py
+- packages/core/src/ranvier/_internal/runtime/checkpointer.py
 - packages/core/tests/unit/runtime/test_checkpointer.py
 - packages/core/tests/integration/runtime/test_checkpointer.py
 Shared files: none.
@@ -41,7 +41,7 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/src/agintis/platform/checkpointer/postgres.py` and `/home/wysted/code/agintis/src/agintis/bootstrap/checkpointer.py`.
+- Port from `agintis/src/agintis/platform/checkpointer/postgres.py` and `agintis/src/agintis/bootstrap/checkpointer.py`.
 - S4 verifies the per-instance write-lock claim; if it holds, leave a `shortcut:` comment or a note for T15 about checkpointer pool sizing instead of designing around it here.
 - langgraph imports are allowed in `runtime` (C5).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

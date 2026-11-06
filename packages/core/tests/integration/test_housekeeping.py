@@ -19,23 +19,24 @@ from procrastinate.periodic import PeriodicDeferrer
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import SecretStr
 
-from graph_agent._internal.config.manifest import CronSpec, FlowSpec
-from graph_agent._internal.config.settings import DatabaseSettings, RunsSettings, Settings
-from graph_agent._internal.db.migrate import MigrationError, advisory_lock, apply_migrations
-from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
-from graph_agent._internal.queue import (
+from integration._resources import Resources
+from ranvier._internal.config.manifest import CronSpec, FlowSpec
+from ranvier._internal.config.settings import DatabaseSettings, RunsSettings, Settings
+from ranvier._internal.db.migrate import MigrationError, advisory_lock, apply_migrations
+from ranvier._internal.db.pool import open_app_pool, open_checkpointer_pool
+from ranvier._internal.queue import (
     PROCRASTINATE_MIGRATIONS,
     ProcrastinateRunQueue,
     apply_procrastinate_schema,
     make_app,
 )
-from graph_agent._internal.runtime.checkpointer import (
+from ranvier._internal.runtime.checkpointer import (
     create_checkpointer,
     setup_checkpointer,
 )
-from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
-from graph_agent._internal.worker import (
+from ranvier._internal.runtime.flows import FlowRegistry
+from ranvier._internal.runtime.runs import RunsRepository, RunStatus
+from ranvier._internal.worker import (
     FIRE_CRON,
     PRUNE_LOCK_KEY,
     PRUNE_WINDOW,
@@ -47,7 +48,6 @@ from graph_agent._internal.worker import (
     run_sweep,
     run_worker,
 )
-from integration._resources import Resources
 
 MODULE = "t25_integration_flows"
 FLOW = "steps"
@@ -58,7 +58,7 @@ SHORT_LEASE_S = 0.05
 STALE_AGE_S = 3600.0  # how far back a test moves `created_at` to make a run stale
 DELETE_AFTER = timedelta(days=2)
 CRON = CronSpec(schedule="0 3 * * *", input={"source": "daily"})
-EXECUTE = "graph_agent.execute_run"
+EXECUTE = "ranvier.execute_run"
 ran: list[str] = []
 
 
@@ -155,7 +155,7 @@ async def _rows(pool: AsyncConnectionPool, query: str, *params: Any) -> list[tup
 
 
 async def _status(pool: AsyncConnectionPool, run_id: uuid.UUID) -> str:
-    rows = await _rows(pool, "SELECT status FROM graph_agent.runs WHERE run_id = %s", run_id)
+    rows = await _rows(pool, "SELECT status FROM ranvier.runs WHERE run_id = %s", run_id)
     return str(rows[0][0])
 
 
@@ -168,7 +168,7 @@ async def _until(pool: AsyncConnectionPool, run_id: uuid.UUID, want: RunStatus) 
 async def _execute_jobs(pool: AsyncConnectionPool) -> list[tuple[Any, ...]]:
     return await _rows(
         pool,
-        "SELECT status::text, priority FROM graph_agent.procrastinate_jobs "
+        "SELECT status::text, priority FROM ranvier.procrastinate_jobs "
         "WHERE task_name = %s ORDER BY id",
         EXECUTE,
     )
@@ -206,7 +206,7 @@ async def test_stale_pending_run_is_redeferred_oldest_first(
     fresh, _ = await _new_run(res)
     await _rows(  # age only the first two by the same delta: no timing, the order is kept
         pool,
-        "UPDATE graph_agent.runs SET created_at = created_at - make_interval(secs => %s) "
+        "UPDATE ranvier.runs SET created_at = created_at - make_interval(secs => %s) "
         "WHERE run_id = ANY(%s) RETURNING run_id",
         STALE_AGE_S,
         [first, second],
@@ -218,7 +218,7 @@ async def test_stale_pending_run_is_redeferred_oldest_first(
 
     rows = await _rows(
         pool,
-        "SELECT (args->>'run_id')::uuid FROM graph_agent.procrastinate_jobs "
+        "SELECT (args->>'run_id')::uuid FROM ranvier.procrastinate_jobs "
         "WHERE task_name = %s ORDER BY id",
         EXECUTE,
     )
@@ -232,7 +232,7 @@ async def test_stale_pending_run_is_redeferred_oldest_first(
 async def _stall(pool: AsyncConnectionPool, run_id: uuid.UUID) -> None:
     await _rows(
         pool,
-        "UPDATE graph_agent.procrastinate_jobs SET status = 'doing', worker_id = NULL "
+        "UPDATE ranvier.procrastinate_jobs SET status = 'doing', worker_id = NULL "
         "WHERE queueing_lock = %s AND status = 'todo' RETURNING id",
         str(run_id),
     )
@@ -295,8 +295,8 @@ _HOLDER = """
 import asyncio, sys
 from types import SimpleNamespace
 from pydantic import SecretStr
-from graph_agent._internal.config.settings import DatabaseSettings, Settings
-from graph_agent._internal.worker import run_sweep
+from ranvier._internal.config.settings import DatabaseSettings, Settings
+from ranvier._internal.worker import run_sweep
 
 class Hold:
     async def get_stalled_jobs(self, **kwargs):
@@ -361,7 +361,7 @@ async def test_cron_firing_creates_a_run_on_a_new_thread_once(
             periodic_id=pid,
         )
     rows = await _rows(
-        pool, "SELECT thread_id, input, metadata FROM graph_agent.runs ORDER BY created_at"
+        pool, "SELECT thread_id, input, metadata FROM ranvier.runs ORDER BY created_at"
     )
     assert len(rows) == 2
     assert rows[0][0] != rows[1][0]
@@ -396,7 +396,7 @@ async def test_cron_retry_after_a_failed_defer_defers_the_existing_run(
     assert await _execute_jobs(pool) == []
     await fire(queue)  # attempt 2: created=False, still deferred
     assert len(await _execute_jobs(pool)) == 1
-    assert len(await _rows(pool, "SELECT run_id FROM graph_agent.runs")) == 1
+    assert len(await _rows(pool, "SELECT run_id FROM ranvier.runs")) == 1
 
 
 async def test_registered_cron_fires_through_the_periodic_deferrer_and_runs(
@@ -421,7 +421,7 @@ async def test_registered_cron_fires_through_the_periodic_deferrer_and_runs(
         await deferrer.defer_jobs([(cron_tasks[cron_periodic_id(FLOW, CRON)], FIRED_AT)])
         async with asyncio.timeout(WAIT_S):
             while (  # noqa: ASYNC110 (polls a DB row)
-                not (rows := await _rows(pool, "SELECT run_id, status FROM graph_agent.runs"))
+                not (rows := await _rows(pool, "SELECT run_id, status FROM ranvier.runs"))
                 or rows[0][1] != RunStatus.SUCCESS
             ):
                 await asyncio.sleep(POLL_S)
@@ -440,7 +440,7 @@ async def test_make_app_pins_the_schema_whatever_the_url_search_path_says(
     app = make_app(public_path_settings)
     async with app.open_async():
         rows = await app.connector.execute_query_all_async(query="SHOW search_path")
-    assert rows == [{"search_path": "graph_agent"}]
+    assert rows == [{"search_path": "ranvier"}]
 
 
 # --- prune -------------------------------------------------------------------------------------
@@ -448,7 +448,7 @@ async def test_make_app_pins_the_schema_whatever_the_url_search_path_says(
 
 async def _checkpoints(pool: AsyncConnectionPool, thread: uuid.UUID) -> int:
     rows = await _rows(
-        pool, "SELECT count(*) FROM graph_agent.checkpoints WHERE thread_id = %s", str(thread)
+        pool, "SELECT count(*) FROM ranvier.checkpoints WHERE thread_id = %s", str(thread)
     )
     return int(rows[0][0])
 
@@ -456,7 +456,7 @@ async def _checkpoints(pool: AsyncConnectionPool, thread: uuid.UUID) -> int:
 async def _age(pool: AsyncConnectionPool, thread: uuid.UUID, days: int) -> None:
     await _rows(
         pool,
-        "UPDATE graph_agent.runs SET finished_at = now() - make_interval(days => %s), "
+        "UPDATE ranvier.runs SET finished_at = now() - make_interval(days => %s), "
         "status = 'success' WHERE thread_id = %s RETURNING run_id",
         days,
         thread,
@@ -491,7 +491,7 @@ async def test_prune_keeps_the_latest_checkpoint_then_deletes_the_thread(
         assert await _checkpoints(pool, threads["recent"]) == full
         assert await _checkpoints(pool, threads["stale"]) == 1
         assert await _checkpoints(pool, threads["doomed"]) == 0
-        remaining = await _rows(pool, "SELECT DISTINCT thread_id FROM graph_agent.runs")
+        remaining = await _rows(pool, "SELECT DISTINCT thread_id FROM ranvier.runs")
         assert {r[0] for r in remaining} == {threads["recent"], threads["stale"]}
         # The pruned thread still resumes: its latest checkpoint is intact.
         state = await compiled.aget_state({"configurable": {"thread_id": str(threads["stale"])}})
@@ -542,7 +542,7 @@ async def test_prune_spares_a_thread_reused_after_the_idle_list_was_built(
 
     assert await _checkpoints(pool, doomed) == full
     rows = await _rows(
-        pool, "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at", doomed
+        pool, "SELECT status FROM ranvier.runs WHERE thread_id = %s ORDER BY created_at", doomed
     )
     assert [r[0] for r in rows] == ["success", "pending"]  # the 202 the client got stays valid
 
@@ -562,12 +562,12 @@ async def test_conditional_delete_keeps_the_rows_of_a_thread_reused_after_the_re
         res, history_graph, pool, res.settings.threads.delete_after_days + 1
     )
 
-    with caplog.at_level("WARNING", logger="graph_agent._internal.worker"):
+    with caplog.at_level("WARNING", logger="ranvier._internal.worker"):
         await prune_threads(res, _RacedRuns(pool))
 
     assert await _checkpoints(pool, doomed) == 0  # the shortcut window (see _delete_idle_thread)
     rows = await _rows(
-        pool, "SELECT status FROM graph_agent.runs WHERE thread_id = %s ORDER BY created_at", doomed
+        pool, "SELECT status FROM ranvier.runs WHERE thread_id = %s ORDER BY created_at", doomed
     )
     assert [r[0] for r in rows] == ["success", "pending"]  # the DELETE itself spared the thread
     assert "became active during its delete" in caplog.text
@@ -593,7 +593,7 @@ async def test_prune_stops_at_the_first_thread_when_the_database_is_down(
 
     monkeypatch.setattr(res.checkpointer, "adelete_thread", adelete_thread)
 
-    with caplog.at_level("WARNING", logger="graph_agent._internal.worker"):
+    with caplog.at_level("WARNING", logger="ranvier._internal.worker"):
         await prune_threads(res, runs)
 
     assert calls == 1
@@ -626,7 +626,7 @@ async def test_prune_goes_on_after_a_thread_that_cannot_be_pruned(
     assert await _checkpoints(pool, broken) == full
     assert await _checkpoints(pool, stale) == 1
     assert await _checkpoints(pool, doomed) == 0
-    remaining = await _rows(pool, "SELECT DISTINCT thread_id FROM graph_agent.runs")
+    remaining = await _rows(pool, "SELECT DISTINCT thread_id FROM ranvier.runs")
     assert {r[0] for r in remaining} == {broken, stale}
 
 
@@ -667,7 +667,7 @@ async def test_prune_ignores_a_thread_with_a_running_run(
     assert claim.token is not None
     await _rows(
         pool,
-        "UPDATE graph_agent.runs SET created_at = now() - interval '400 days' "
+        "UPDATE ranvier.runs SET created_at = now() - interval '400 days' "
         "WHERE run_id = %s RETURNING run_id",
         run_id,
     )
@@ -688,7 +688,7 @@ async def test_procrastinate_schema_is_recorded_once_in_our_schema(
         "SELECT table_schema FROM information_schema.tables "
         "WHERE table_name = 'procrastinate_jobs'",
     )
-    assert tables == [("graph_agent",)]  # pinned: not in public, whatever the role is called
+    assert tables == [("ranvier",)]  # pinned: not in public, whatever the role is called
     async with advisory_lock(pool) as conn:
         assert await apply_procrastinate_schema(conn) == []
     recorded = await _rows(pool, f"SELECT count(*) FROM {PROCRASTINATE_MIGRATIONS}")

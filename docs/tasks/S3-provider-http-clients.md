@@ -42,4 +42,4 @@ Shared files: none.
 ## Notes
 - Provider packages are extras; install them for the spike with `uv run --with`.
 - Never use real API keys.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

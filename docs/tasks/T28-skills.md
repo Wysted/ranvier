@@ -20,7 +20,7 @@ Read agentskills.io `SKILL.md` folders, inject name and description into the sys
 - design.md "Out of scope for v0.1" (skill script execution)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/skills.py
+- packages/core/src/ranvier/_internal/agents/skills.py
 - packages/core/tests/unit/agents/test_skills.py
 - packages/core/tests/unit/agents/skills_fixtures/ (small sample skill folders)
 Shared files: none.
@@ -43,4 +43,4 @@ Shared files: none.
 - Check the exact name/description limits in the agentskills.io spec before coding validation.
 - langchain is pinned to 1.4.x; verify the middleware hook names (`wrap_model_call` / request override) against the installed version, not memory.
 - Frontmatter parsing uses PyYAML `safe_load` (already a transitive dependency; T01 declares it).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

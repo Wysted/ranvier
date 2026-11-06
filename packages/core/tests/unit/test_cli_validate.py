@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from graph_agent._internal.cli import main
+from ranvier._internal.cli import main
 
-type Manifest = Callable[[str], None]  # writes graph-agent.toml
+type Manifest = Callable[[str], None]  # writes ranvier.toml
 
 MODULE_NAME = "t17_user_flows"
 MODULE = """
@@ -43,14 +43,14 @@ def uses_unknown_profile(ctx):
 
 async def uses_unknown_refs(ctx):
     ctx.tools("nope")
-    from graph_agent._internal.agents.spec import AgentSpec
+    from ranvier._internal.agents.spec import AgentSpec
 
     await ctx.agent(AgentSpec(name="a", profile="main", tools=("web",), mcp_servers=("docs",)))
     return _builder()
 
 
 async def builds_agent(ctx):
-    from graph_agent._internal.agents.spec import AgentSpec
+    from ranvier._internal.agents.spec import AgentSpec
 
     spec = AgentSpec(name="a", profile="main", tools=("echo",), mcp_servers=("docs",))
     agent = await ctx.agent(spec)
@@ -59,14 +59,14 @@ async def builds_agent(ctx):
 
 
 async def duplicate_tool(ctx):
-    from graph_agent._internal.agents.spec import AgentSpec
+    from ranvier._internal.agents.spec import AgentSpec
 
     await ctx.agent(AgentSpec(name="a", profile="main", tools=("echo", echo)))
     return _builder()
 
 
 async def duplicate_tool_ghost(ctx):
-    from graph_agent._internal.agents.spec import AgentSpec
+    from ranvier._internal.agents.spec import AgentSpec
 
     await ctx.agent(AgentSpec(name="a", profile="ghost", tools=("echo", echo)))
     return _builder()
@@ -110,10 +110,10 @@ def manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Manifest:
     monkeypatch.delitem(sys.modules, MODULE_NAME, raising=False)
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.chdir(tmp_path)  # no stray .env
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", str(tmp_path / "graph-agent.toml"))
+    monkeypatch.setenv("RANVIER_CONFIG", str(tmp_path / "ranvier.toml"))
 
     def write(toml: str) -> None:
-        (tmp_path / "graph-agent.toml").write_text(toml.replace("MOD", MODULE_NAME))
+        (tmp_path / "ranvier.toml").write_text(toml.replace("MOD", MODULE_NAME))
 
     return write
 
@@ -266,7 +266,7 @@ def test_missing_or_broken_manifest_is_one_line(
 def test_missing_manifest_file_is_one_line(
     manifest: Manifest, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", "does-not-exist.toml")
+    monkeypatch.setenv("RANVIER_CONFIG", "does-not-exist.toml")
     assert main(["validate", "--offline"]) == 1
     err = capsys.readouterr().err.strip()
     assert len(err.splitlines()) == 1 and "Traceback" not in err
@@ -275,9 +275,9 @@ def test_missing_manifest_file_is_one_line(
 
 def test_flows_module_does_not_import_validation_deps() -> None:
     code = (
-        "import sys, graph_agent._internal.runtime.flows;"
-        "bad = [m for m in ('mcp', 'graph_agent._internal.runtime.offline',"
-        " 'graph_agent._internal.llm', 'graph_agent._internal.config.settings')"
+        "import sys, ranvier._internal.runtime.flows;"
+        "bad = [m for m in ('mcp', 'ranvier._internal.runtime.offline',"
+        " 'ranvier._internal.llm', 'ranvier._internal.config.settings')"
         " if m in sys.modules];"
         "print(','.join(bad))"
     )
