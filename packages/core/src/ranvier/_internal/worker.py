@@ -91,8 +91,8 @@ PRUNE_PERIODIC_ID: Final = "prune"
 SWEEP_CRON: Final = "* * * * *"  # every minute
 PRUNE_CRON: Final = "17 3 * * *"  # daily, off the hour
 # Any fixed bigint shared by every sweep (the migrations lock uses another key).
-SWEEP_LOCK_KEY: Final = 0x6772617073776570
-PRUNE_LOCK_KEY: Final = 0x6772617072756E65
+SWEEP_LOCK_KEY: Final = 0x72616E7673776570  # "ranvswep"
+PRUNE_LOCK_KEY: Final = 0x72616E767072756E  # "ranvprun"
 # A thread idle longer than `ttl_days` + this is no longer `keep_latest`-pruned (it was, once a
 # day, while inside the window); it waits for its whole-thread delete.
 PRUNE_WINDOW: Final = timedelta(days=7)

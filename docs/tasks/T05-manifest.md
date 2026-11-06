@@ -46,6 +46,6 @@ Shared files: none.
 
 ## Notes
 - Cron lib: check what procrastinate depends on (`croniter`?) and use the same one so schedules mean the same thing in both places; importing `croniter` here does not break contract C4 (it only restricts `procrastinate`).
-- Profile shape ported from `/home/wysted/code/agintis/src/agintis/platform/llm/profiles.py` (YAML there, TOML here).
+- Profile shape ported from `agintis/src/agintis/platform/llm/profiles.py` (YAML there, TOML here).
 - Same syntax as `langgraph.json` for targets; no `.py` file paths.
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

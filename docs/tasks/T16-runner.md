@@ -49,7 +49,7 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Notes
 - design.md §5 says `execute_run` is the only way a flow runs, but §6 says `run --memory` uses no database; splitting out `stream_graph` resolves this. Mention it in the task report so design.md can say so.
 - Read `docs/spikes/S1.md` (RunControl, context without `context_schema`, `metadata.run_id`).
-- Port the stream mapping and interrupt-by-id resume from `/home/wysted/code/agintis/src/agintis/agent_kit/runtime/langgraph_runner.py`.
+- Port the stream mapping and interrupt-by-id resume from `agintis/src/agintis/agent_kit/runtime/langgraph_runner.py`.
 - Sync/blocking work must not run on the loop (blockbuster is on in tests).
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From the T13 review (orchestrator decision, design §5): use the lease token returned by `claim` for heartbeat/finish; a claim may return the run as `cancelled` when `cancel_requested` was set.

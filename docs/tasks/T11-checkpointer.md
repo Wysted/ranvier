@@ -41,7 +41,7 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/src/agintis/platform/checkpointer/postgres.py` and `/home/wysted/code/agintis/src/agintis/bootstrap/checkpointer.py`.
+- Port from `agintis/src/agintis/platform/checkpointer/postgres.py` and `agintis/src/agintis/bootstrap/checkpointer.py`.
 - S4 verifies the per-instance write-lock claim; if it holds, leave a `shortcut:` comment or a note for T15 about checkpointer pool sizing instead of designing around it here.
 - langgraph imports are allowed in `runtime` (C5).
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

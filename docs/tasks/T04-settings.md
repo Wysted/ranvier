@@ -42,6 +42,6 @@ Shared files: none.
 
 ## Notes
 - Use pydantic-settings `settings_customise_sources` with `TomlConfigSettingsSource`; stdlib `tomllib`, no PyYAML (OD-6).
-- Contrast: agintis has 13 `BaseSettings` classes each loading `.env` (`/home/wysted/code/agintis/src/agintis/bootstrap/settings.py`); do not port that shape, only the field ideas.
+- Contrast: agintis has 13 `BaseSettings` classes each loading `.env` (`agintis/src/agintis/bootstrap/settings.py`); do not port that shape, only the field ideas.
 - Tests use `tmp_path` toml files and `monkeypatch.setenv`; never touch the repo `.env`.
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

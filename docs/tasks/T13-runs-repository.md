@@ -43,7 +43,7 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port ideas from `/home/wysted/code/agintis/src/agintis/modules/conversations/application/run_leases.py` and `domain/thread.py` (lease moves from a thread row to the run row).
+- Port ideas from `agintis/src/agintis/modules/conversations/application/run_leases.py` and `domain/thread.py` (lease moves from a thread row to the run row).
 - Raw SQL with psycopg `dict_row`; no ORM.
 - No threads table (OD-3): thread identity is `thread_id` on runs.
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

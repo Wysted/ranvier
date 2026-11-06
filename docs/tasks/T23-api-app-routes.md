@@ -47,7 +47,7 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/src/agintis/modules/agents_catalog/http.py` and `/home/wysted/code/agintis/src/agintis/modules/conversations/http.py`.
+- Port from `agintis/src/agintis/modules/agents_catalog/http.py` and `agintis/src/agintis/modules/conversations/http.py`.
 - Why OD-1 (a): inline runs execute in the API process with the same `execute_run`; do not add a pub/sub bus.
 - tasks.md does not make T23 depend on T24, but background runs need a queue; the `RunQueue` Protocol from T16 is the seam.
 - `fastapi`/`starlette` only here (C3); `uvicorn` only here and in `cli`.

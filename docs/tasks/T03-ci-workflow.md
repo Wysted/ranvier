@@ -40,7 +40,7 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port structure from `/home/wysted/code/agintis/.github/workflows/ci.yml`; drop what ranvier does not have.
+- Port structure from `agintis/.github/workflows/ci.yml`; drop what ranvier does not have.
 - The git host is GitHub (github.com/Wysted/ranvier); GitHub Actions is used. Keep host-specific lines isolated.
 - Python 3.14 failing because langgraph is unclassified is information, not a reason to drop it: mark that matrix leg `continue-on-error` and say so (OD-7).
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

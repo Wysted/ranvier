@@ -47,5 +47,5 @@ Shared files: none.
 ## Notes
 - Reads files with `importlib.resources`, not relative paths.
 - Do not read or print connection URLs containing passwords in logs.
-- agintis used Alembic + SQLAlchemy (`/home/wysted/code/agintis/src/agintis/platform/db/`); OD-5 explicitly replaces that with ~60 lines of runner.
+- agintis used Alembic + SQLAlchemy (`agintis/src/agintis/platform/db/`); OD-5 explicitly replaces that with ~60 lines of runner.
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -40,6 +40,6 @@ Shared files: none.
 
 ## Notes
 - Postgres major version: pick the current stable one supported by `langgraph-checkpoint-postgres` and Procrastinate; state it in the compose file comment.
-- Reference for fixtures: `/home/wysted/code/agintis/tests/support/postgres.py`.
+- Reference for fixtures: `agintis/tests/support/postgres.py`.
 - Use psycopg (already a dependency), not asyncpg (banned).
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

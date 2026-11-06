@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = "ranvier"
 # Arbitrary constant shared by every process that migrates this database.
-ADVISORY_LOCK_KEY = 0x6772617068  # "graph"
+ADVISORY_LOCK_KEY = 0x72616E76696572  # "ranvier"
 MIGRATION_LOCK_POLL_S = 0.2
 _FILE_RE = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 

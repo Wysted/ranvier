@@ -39,6 +39,6 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port from `/home/wysted/code/agintis/src/agintis/platform/observability/tracing.py`, `otlp.py` and `/home/wysted/code/agintis/src/agintis/bootstrap/observability.py` (attributes renamed).
+- Port from `agintis/src/agintis/platform/observability/tracing.py`, `otlp.py` and `agintis/src/agintis/bootstrap/observability.py` (attributes renamed).
 - Contract C6: opentelemetry/openinference only in `observability.otlp`.
 - Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -21,7 +21,7 @@ htmlcov/
 .vscode/
 .DS_Store
 
-# Local tooling and private notes (agents read _shared/ by absolute path)
+# Local tooling and private notes
 .atl/
 reports/
 research_notes/
