@@ -290,7 +290,7 @@ Claims make both recovery paths idempotent: the job that loses the claim exits. 
 | Command | Does |
 |---------|------|
 | `validate [--diagram] [--offline]` | Section 4 |
-| `run <flow> --input JSON [--thread ID] [--resume JSON] [--memory]` | Inline run printing events; `--memory` uses `InMemorySaver` and no database |
+| `run <flow> (--input JSON \| --resume JSON --thread ID) [--thread ID] [--memory]` | Inline run printing events; `--memory` (only with `--input`) uses `InMemorySaver` and no database |
 | `serve` | uvicorn with the API; SIGTERM/SIGINT drain inline runs (stream ends with `run_handed_over`) and exit 0; signal handlers cover the container close. Only `ranvier serve` drains early: embedding `create_app` elsewhere drains at lifespan close |
 | `worker` | Procrastinate worker: execute, sweep, prune, crons; SIGTERM/SIGINT stop fetching, drain, wait for jobs, hand over, exit 0 |
 | `migrate` | Own SQL migrations, `checkpointer.setup()`, Procrastinate schema |
