@@ -338,7 +338,7 @@ async def check_anthropic() -> None:
     async with stub_server() as (stub, url):
         shared = limited_client()
         common = {"model_provider": "anthropic", "api_key": "sk-dummy", "base_url": url}
-        m, notes = build("claude-sonnet-4-5", **common, http_async_client=shared)
+        m, notes = build("anthropic-model", **common, http_async_client=shared)
         print(f"  http_async_client kwarg: warnings={notes}")
         if m is not None:
             print(
@@ -351,8 +351,8 @@ async def check_anthropic() -> None:
                 )  # type: ignore[attr-defined]
             except TypeError as exc:  # spike: show the failure mode
                 print(f"  ainvoke fails: {type(exc).__name__}: {str(exc)[:160]}")
-        a, _ = build("claude-sonnet-4-5", **common)
-        b, _ = build("claude-sonnet-4-5", **common)
+        a, _ = build("anthropic-model", **common)
+        b, _ = build("anthropic-model", **common)
         default_shared = a._async_client._client is b._async_client._client  # type: ignore[union-attr]
         limits = a._async_client._client._transport._pool._max_connections  # type: ignore[union-attr]
         print(
@@ -361,8 +361,8 @@ async def check_anthropic() -> None:
         print(f"  baseline, default client: {await burst(stub, [a, b])}")  # type: ignore[list-item]
     async with stub_server() as (stub, url):
         common = {**common, "base_url": url, "timeout": 60, "max_retries": 2}
-        a, _ = build("claude-sonnet-4-5", **common)
-        b, _ = build("claude-haiku-4-5", **common)
+        a, _ = build("anthropic-model", **common)
+        b, _ = build("anthropic-model-small", **common)
         try:
             seed_anthropic_client(a, limited_client(httpx))
         except TypeError as exc:

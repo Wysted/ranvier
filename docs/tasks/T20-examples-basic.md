@@ -51,4 +51,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Notes
 - `scripts/check.sh` (T02) must pick the new member up; if it hardcodes paths, fix it minimally and say so.
 - Keep flows tiny; they are documentation.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -45,4 +45,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - Fake model lives in `runtime/offline.py` (not in `testing.py`) because `_internal` must not import `testing` (contract C2) and `cli` must not import langchain directly (C5). This file is a small addition to the design layout; report it.
 - Offline `FlowContext`: `model(profile)` validates the profile exists then returns the fake; `tools(*names)` validates names against the manifest; `agent(spec)` validates referenced profile/MCP names and returns a trivial compiled graph.
 - tasks.md lists only T14 as a dependency; the tool registry (T27) may be reused if present but is not required.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -46,4 +46,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - langchain-core tools are allowed in `agents` (C5).
 - Preserve the original `name`, `description` and `args_schema` when wrapping.
 - Tool name collisions with MCP tools are resolved in T30, not here.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

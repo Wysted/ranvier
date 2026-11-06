@@ -43,4 +43,4 @@ Shared files: none.
 - Port from `/home/wysted/code/agintis/src/agintis/modules/agents_catalog/domain/events.py` and `http.py` (it already imports `fastapi.sse`).
 - `fastapi` is allowed only under `api` (C3). Use `http.HTTPStatus`, no numeric literals.
 - Error codes come from `runtime/runs.py` (T13).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

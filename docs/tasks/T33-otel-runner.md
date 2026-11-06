@@ -40,4 +40,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Notes
 - Gauge sources for limits and pools are registered in T15; here you add the runner ones and verify the whole set reaches the port.
 - No new dependencies.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

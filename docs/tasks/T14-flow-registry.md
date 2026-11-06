@@ -44,4 +44,4 @@ Shared files: none.
 - Read `docs/spikes/S1.md`: it decides whether flows must declare `context_schema` to receive `runtime.context` and what the compile call needs.
 - Pass `name=<flow>` to `compile` for readable traces.
 - Error codes and `RunError` come from `runtime/runs.py` (T13).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

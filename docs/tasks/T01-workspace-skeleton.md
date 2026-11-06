@@ -44,7 +44,7 @@ Shared files: none.
 - Any module other than the ones listed (no stubs for llm.py, limits.py, etc.)
 
 ## Acceptance criteria
-- [ ] `git init` done on `main`; initial commit contains the existing `docs/`, `reports/`, `research_notes/`, `.claude/` (this task runs in the repo root, no worktree is possible before git exists); work then continues on `task/T01-workspace-skeleton`
+- [ ] `git init` done on `main`; initial commit contains the existing `docs/`, `reports/`, `research_notes/`, (this task runs in the repo root, no worktree is possible before git exists); work then continues on `task/T01-workspace-skeleton`
 - [ ] `.gitignore` covers `.env`, `.venv`, `__pycache__`, `.mypy_cache`, `.ruff_cache`, `dist/`; no `.env` file is created or read
 - [ ] Runtime deps: langgraph 1.x, `langchain==1.4.*` (pinned, see `_shared/python.md`), langgraph-checkpoint-postgres, psycopg[binary,pool], pydantic>=2, pydantic-settings, fastapi, uvicorn, procrastinate, `mcp>=2.3,<3`, httpx, genai-prices, PyYAML (skills frontmatter, T28), a cron parser (T05 decides; add `croniter` if procrastinate does not already pull it)
 - [ ] Extras `[openai]`, `[anthropic]`, `[ollama]` (the langchain-* provider packages) and `[otel]` (opentelemetry-sdk, OTLP exporter, openinference-instrumentation-langchain); dev group: ruff, mypy, import-linter, pytest, pytest-asyncio, blockbuster
@@ -57,4 +57,4 @@ Shared files: none.
 - `httpx2` (used by the mcp SDK v2) must resolve alongside `httpx`; check it comes in transitively through `mcp` and do not pin it yourself.
 - Look at `/home/wysted/code/agintis/pyproject.toml` and its `uv.lock` for version ranges that already worked together.
 - Keep `cli.py` tiny: no subcommand logic, no langchain imports (import-linter C5 forbids them there).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -321,7 +321,7 @@ def test_model_copy_keeps_the_shared_http_client(monkeypatch: pytest.MonkeyPatch
             {
                 "profiles": {
                     "oa": {"provider": "openai", "model": "gpt-x"} | keyed,
-                    "an": {"provider": "anthropic", "model": "claude-x"} | keyed,
+                    "an": {"provider": "anthropic", "model": "anthropic-model"} | keyed,
                     "ol": {"provider": "ollama", "model": "llama"},
                 }
             }

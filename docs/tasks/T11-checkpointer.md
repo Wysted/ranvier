@@ -44,4 +44,4 @@ Shared files: none.
 - Port from `/home/wysted/code/agintis/src/agintis/platform/checkpointer/postgres.py` and `/home/wysted/code/agintis/src/agintis/bootstrap/checkpointer.py`.
 - S4 verifies the per-instance write-lock claim; if it holds, leave a `shortcut:` comment or a note for T15 about checkpointer pool sizing instead of designing around it here.
 - langgraph imports are allowed in `runtime` (C5).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

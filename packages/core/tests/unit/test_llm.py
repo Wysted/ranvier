@@ -26,12 +26,12 @@ def _registry(monkeypatch: pytest.MonkeyPatch) -> LlmRegistry:
                 "oa2": {"provider": "openai", "model": "gpt-y"} | KEYED,
                 "an": {
                     "provider": "anthropic",
-                    "model": "claude-x",
+                    "model": "anthropic-model",
                     "timeout_s": 9,
                     "max_retries": 6,
                 }
                 | KEYED,
-                "an2": {"provider": "anthropic", "model": "claude-y"} | KEYED,
+                "an2": {"provider": "anthropic", "model": "anthropic-model-small"} | KEYED,
                 "ol": {"provider": "ollama", "model": "llama", "timeout_s": 5},
                 "ol2": {"provider": "ollama", "model": "llama2"},
             },
@@ -117,7 +117,7 @@ def test_anthropic_requests_go_through_shared_client(monkeypatch: pytest.MonkeyP
                 "id": "msg_1",
                 "type": "message",
                 "role": "assistant",
-                "model": "claude-x",
+                "model": "anthropic-model",
                 "content": [{"type": "text", "text": "hi"}],
                 "stop_reason": "end_turn",
                 "stop_sequence": None,

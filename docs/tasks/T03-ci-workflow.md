@@ -43,4 +43,4 @@ Shared files: none.
 - Port structure from `/home/wysted/code/agintis/.github/workflows/ci.yml`; drop what ranvier does not have.
 - The git host is GitHub (github.com/Wysted/ranvier); GitHub Actions is used. Keep host-specific lines isolated.
 - Python 3.14 failing because langgraph is unclassified is information, not a reason to drop it: mark that matrix leg `continue-on-error` and say so (OD-7).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

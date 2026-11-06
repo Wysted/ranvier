@@ -2,7 +2,7 @@
 
 ranvier is an installable Python package that runs plain LangGraph 1.x `StateGraph` flows in production: it registers them from a manifest, executes them durably on Postgres, exposes them over CLI, HTTP/SSE and a queue worker, and ships a small kit to build subagents. Product repos install it by git tag and own only their flows, tools and config.
 
-Source of truth for the "why": `.claude/agents/_shared/decisions.md` (decision log), `reports/Plataforma de flujos sobre LangGraph.md`, `reports/Rendimiento de Python en la plataforma.md`. Items marked **(OD-n)** follow the recommendation of an open decision at the end of this document.
+Source of truth for the "why": the decision log (kept outside the repo), `reports/Plataforma de flujos sobre LangGraph.md`, `reports/Rendimiento de Python en la plataforma.md`. Items marked **(OD-n)** follow the recommendation of an open decision at the end of this document.
 
 ## Decisions at a glance
 
@@ -559,7 +559,7 @@ Studio and `langgraph-sdk` compatibility, Agent Protocol, A2A; Temporal/DBOS; `[
 
 ## Resolved decisions (2026-11-04)
 
-All eight were resolved by adopting the resolution below. OD-1 was confirmed by two independent researchers; OD-4 and OD-7 by measurements and package metadata. To change one, record it first in `.claude/agents/_shared/decisions.md`.
+All eight were resolved by adopting the resolution below. OD-1 was confirmed by two independent researchers; OD-4 and OD-7 by measurements and package metadata. To change one, record it first in the decision log.
 
 | # | Decision | Options | Resolution |
 |---|----------|---------|----------------|

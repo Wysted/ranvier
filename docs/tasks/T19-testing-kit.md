@@ -43,4 +43,4 @@ Shared files: none.
 - Beyond tasks.md deps: this needs T30 (`build_agent`, wave F) for `ctx.agent`.
 - The optional `mcp=` parameter is a small ADDITION to the §11 signature so T31's research example can be tested without a network; report it so design.md can be updated.
 - `ranvier.testing` may import `_internal`, never the other way around (C2).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

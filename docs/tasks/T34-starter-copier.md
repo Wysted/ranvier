@@ -44,6 +44,6 @@ Shared files: none.
 - Use `uvx copier` if `copier` is not installed.
 - `.env.example` holds names and placeholders only; never create or read a `.env`.
 - Reuse `scripts/check.sh` and the CI structure from T02/T03 rather than inventing new ones.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From the T23 and T31 reviews (orchestrator): deployment docs must state a request body size limit at the gateway (uvicorn does not limit it) and the SSE idle-timeout caveat (no ping yet: proxies with idle timeout shorter than the longest silent node cancel inline runs); an API key without tenant_id is an admin key that sees all tenants. The starter's import-linter contract for user code needs `allow_indirect_imports = true` (the facade imports _internal); tests directories are not covered by import-linter, so add ruff banned-api for `ranvier._internal` in the starter (and examples/) tests. The starter manifest must not add profiles with `api_key_env` unless every flow needs it (bootstrap warms up all profiles).
 - PENDING USER ACTION (orchestrator): `starter/.env.example` could not be created by any agent (permission deny rule on `.env*`). Content to add by hand: `RANVIER_DATABASE__URL=postgresql://ranvier:ranvier@127.0.0.1:25432/ranvier`, `API_KEY_ADMIN=change-me`, commented `# OPENAI_API_KEY=` and `# ANTHROPIC_API_KEY=`.

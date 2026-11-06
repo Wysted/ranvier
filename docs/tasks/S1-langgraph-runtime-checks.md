@@ -42,4 +42,4 @@ Shared files: none.
 ## Notes
 - Use the langgraph version pinned in `uv.lock` (T01); state it in the findings.
 - If sources disagree on `RunControl` (as design.md warns), the installed package source is the authority.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

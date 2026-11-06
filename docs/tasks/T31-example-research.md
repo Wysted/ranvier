@@ -42,4 +42,4 @@ Shared files: none.
 ## Notes
 - Keep it small; it is documentation of the pattern.
 - If the `mcp=` test parameter of `flow_context` (T19) is missing, report instead of working around it inside the example.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

@@ -864,7 +864,7 @@ def provider_payloads(history: list[Any]) -> list[str]:
     try:
         from langchain_anthropic.chat_models import _format_messages
 
-        _, msgs = _format_messages(history, model="claude-sonnet-4-5")
+        _, msgs = _format_messages(history, model="anthropic-model")
         tr = msgs[-1]["content"][0]
         out.append(
             f"anthropic: role={msgs[-1]['role']} {tr['type']} inner={[c['type'] for c in tr['content']]}"

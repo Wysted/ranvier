@@ -49,4 +49,4 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 - The exact v2 part shape is something S1 also records; if `docs/spikes/S1.md` already exists, use it, otherwise check the installed langgraph.
 - Error codes are NOT defined here: T13 owns the `ErrorCode` enum in `runs.py` (T12 and T13 are in the same wave).
 - langgraph/langchain imports are allowed in `runtime` (C5).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

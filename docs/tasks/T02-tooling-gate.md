@@ -47,4 +47,4 @@ Shared files: none.
 - Layer syntax for C1: `cli | api | worker` > `bootstrap` > `runtime` > `agents` > `llm | limits | usage | observability | queue` > `db | config` (siblings independent).
 - Tests live in `packages/core/tests/{unit,integration}/` mirroring the `_internal` tree.
 - Config only: no source code beyond the conftest fixture.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

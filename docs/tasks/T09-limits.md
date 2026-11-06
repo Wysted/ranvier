@@ -44,4 +44,4 @@ Shared files: none.
 - Read `docs/spikes/S5.md` first.
 - Everything is created once in the composition root; no module-level singletons.
 - Expose cheap read-only stats (active runs, waiters, executor occupancy) for T33 to publish; do not depend on OTel here.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

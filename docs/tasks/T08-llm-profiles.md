@@ -44,5 +44,5 @@ Shared files: none.
 - Read `docs/spikes/S3.md` first; it decides how the shared client reaches each integration.
 - Port ideas from `/home/wysted/code/agintis/src/agintis/platform/llm/profiles.py`, `models.py`, `errors.py`, `/home/wysted/code/agintis/src/agintis/bootstrap/llm.py`.
 - Provider imports must be lazy (extras are optional). langchain is allowed here (contract C5).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From S3 (orchestrator): declare `httpx2>=2.16,<3` as a direct dependency in packages/core/pyproject.toml (llm.py imports it) and cap `langchain-anthropic` to its current minor; follow docs/spikes/S3.md "Impact on dependent tasks" for the per-provider client wiring, the anthropic `shortcut:` and its identity test.

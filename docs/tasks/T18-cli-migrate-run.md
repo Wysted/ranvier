@@ -43,7 +43,7 @@ Shared files (append-only, keep edits minimal to avoid merge conflicts):
 ## Notes
 - Keep handlers thin: parse, open container, call runtime, print. `asyncio.run` once per command.
 - To run a toy flow in tests build a tmp manifest, same technique as T17's tests.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
 - From T11 (orchestrator decision): run `setup_checkpointer` (and later the Procrastinate schema step) under the SAME advisory lock as the own SQL migrations, so concurrent `migrate` invocations cannot interleave the saver's migrations.
 - From the T15 review (orchestrator decision): `Container.runs` is None in memory mode; `execute_run` raises loudly when `runs is None` (no fallback, no in-memory repository); `run --memory` goes through `stream_graph` (R2) with InMemorySaver and reports usage only in the `end` event. The Container exposes the shared shutdown deadline (T26 drain uses it).
 - From the T16 review (orchestrator): `stream_graph` does not apply the run timeout; `run --memory` reuses the runner's pump pattern (bounded queue, `aclosing(stream)` inside the task, `asyncio.timeout(flow.timeout_s)`) — rule 1s of `_shared/python.md`.

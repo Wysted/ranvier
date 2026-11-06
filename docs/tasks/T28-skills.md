@@ -43,4 +43,4 @@ Shared files: none.
 - Check the exact name/description limits in the agentskills.io spec before coding validation.
 - langchain is pinned to 1.4.x; verify the middleware hook names (`wrap_model_call` / request override) against the installed version, not memory.
 - Frontmatter parsing uses PyYAML `safe_load` (already a transitive dependency; T01 declares it).
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.

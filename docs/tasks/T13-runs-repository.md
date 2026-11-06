@@ -46,4 +46,4 @@ Shared files: none.
 - Port ideas from `/home/wysted/code/agintis/src/agintis/modules/conversations/application/run_leases.py` and `domain/thread.py` (lease moves from a thread row to the run row).
 - Raw SQL with psycopg `dict_row`; no ORM.
 - No threads table (OD-3): thread identity is `thread_id` on runs.
-- Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
+- Conventions: follow the project's Python conventions and the decision log; never read `.env`; agintis is read-only reference.
