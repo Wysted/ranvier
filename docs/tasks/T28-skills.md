@@ -20,7 +20,7 @@ Read agentskills.io `SKILL.md` folders, inject name and description into the sys
 - design.md "Out of scope for v0.1" (skill script execution)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/skills.py
+- packages/core/src/ranvier/_internal/agents/skills.py
 - packages/core/tests/unit/agents/test_skills.py
 - packages/core/tests/unit/agents/skills_fixtures/ (small sample skill folders)
 Shared files: none.

@@ -21,12 +21,12 @@ The transport-agnostic run event types and the mapping from LangGraph v2 stream 
 - design.md §13 rows "Run context" and "Event DTOs and SSE"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/events.py
-- packages/core/src/graph_agent/_internal/runtime/context.py
+- packages/core/src/ranvier/_internal/runtime/events.py
+- packages/core/src/ranvier/_internal/runtime/context.py
 - packages/core/tests/unit/runtime/test_events.py
 - packages/core/tests/unit/runtime/test_context.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/__init__.py (append `RunContext`, `FlowContext` to imports and `__all__`; T27 appends `AgentSpec` in the same wave)
+- packages/core/src/ranvier/__init__.py (append `RunContext`, `FlowContext` to imports and `__all__`; T27 appends `AgentSpec` in the same wave)
 
 ## Out of scope
 - Wire DTOs and SSE encoding (T21)

@@ -10,9 +10,9 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.runtime.flows import FlowRegistry, check_version
-from graph_agent._internal.runtime.runs import ErrorCode, RunError
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.runtime.flows import FlowRegistry, check_version
+from ranvier._internal.runtime.runs import ErrorCode, RunError
 
 MODULE = "t14_user_flows"
 

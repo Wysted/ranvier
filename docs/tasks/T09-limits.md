@@ -20,7 +20,7 @@ The platform-owned global limits: run admission semaphore, bounded default threa
 - design.md §14 open check on `ProcessPoolExecutor.kill_workers`
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/limits.py
+- packages/core/src/ranvier/_internal/limits.py
 - packages/core/tests/unit/test_limits.py
 Shared files: none.
 

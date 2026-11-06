@@ -12,7 +12,7 @@ status: done
 ---
 
 ## Goal
-Aggregate `usage_metadata` per `(model, agent)` for each run, upsert it into `graph_agent.usage`, and report tokens and indicative cost with `genai-prices` at read time.
+Aggregate `usage_metadata` per `(model, agent)` for each run, upsert it into `ranvier.usage`, and report tokens and indicative cost with `genai-prices` at read time.
 
 ## Design references
 - design.md §9 "Usage ledger" (paragraph and column table)
@@ -21,12 +21,12 @@ Aggregate `usage_metadata` per `(model, agent)` for each run, upsert it into `gr
 - design.md §13 row "Usage ledger"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/usage.py
+- packages/core/src/ranvier/_internal/usage.py
 - packages/core/tests/unit/test_usage.py
 - packages/core/tests/integration/test_usage_repo.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/cli.py (append `_add_usage` and handler; T17 appends `validate` in the same wave)
-- packages/core/src/graph_agent/_internal/bootstrap.py (append only: build the repository and register the `UsageObserver`; T16 appends other fields)
+- packages/core/src/ranvier/_internal/cli.py (append `_add_usage` and handler; T17 appends `validate` in the same wave)
+- packages/core/src/ranvier/_internal/bootstrap.py (append only: build the repository and register the `UsageObserver`; T16 appends other fields)
 
 ## Out of scope
 - The runner itself (T16 already calls observers)

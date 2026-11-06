@@ -21,7 +21,7 @@ The `runs` repository over Postgres: transition rules, conditional claim, fenced
 - design.md §13 row "Run leases"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/runs.py
+- packages/core/src/ranvier/_internal/runtime/runs.py
 - packages/core/tests/unit/runtime/test_runs_transitions.py
 - packages/core/tests/integration/runtime/test_runs.py
 Shared files: none.

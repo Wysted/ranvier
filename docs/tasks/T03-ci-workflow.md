@@ -33,14 +33,14 @@ Shared files: none.
 ## Acceptance criteria
 - [ ] Job `gate`: matrix 3.13 and 3.14, `uv sync`, `scripts/check.sh`; a Postgres service and a second step `pytest -m integration` (the tests arrive with T06+; the step must pass with zero collected tests via `--no-header` handling or `|| [ $? -eq 5 ]`, documented)
 - [ ] Job `install`: for each uv workspace member (derive the list from the root `pyproject.toml`, do not hardcode) create a fresh venv, install only that member without dev group, import its top package
-- [ ] `scripts/ci-install-check.sh` does the git-subdirectory install from the checked-out commit (`git+file://$PWD@$SHA#subdirectory=packages/core`) in a fresh venv and imports `graph_agent`; the result of the open check is stated in the PR description
+- [ ] `scripts/ci-install-check.sh` does the git-subdirectory install from the checked-out commit (`git+file://$PWD@$SHA#subdirectory=packages/core`) in a fresh venv and imports `ranvier`; the result of the open check is stated in the PR description
 - [ ] Workflow lints clean (`actionlint` if available); uses `astral-sh/setup-uv`; caches uv
 - [ ] `scripts/check.sh` green
 - [ ] import-linter contracts hold
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- Port structure from `/home/wysted/code/agintis/.github/workflows/ci.yml`; drop what graph-agent does not have.
-- The real git host is not decided (`https://<host>` in design); GitHub Actions is used because agintis uses it. Keep host-specific lines isolated.
+- Port structure from `/home/wysted/code/agintis/.github/workflows/ci.yml`; drop what ranvier does not have.
+- The git host is GitHub (github.com/Wysted/ranvier); GitHub Actions is used. Keep host-specific lines isolated.
 - Python 3.14 failing because langgraph is unclassified is information, not a reason to drop it: mark that matrix leg `continue-on-error` and say so (OD-7).
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.

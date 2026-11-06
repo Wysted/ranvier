@@ -22,9 +22,9 @@ Pydantic models for flows, crons, tools, MCP servers and LLM profiles/providers,
 - design.md §8 table rows LLM provider concurrency / MCP server / Tool
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/config/manifest.py
+- packages/core/src/ranvier/_internal/config/manifest.py
 - packages/core/tests/unit/config/test_manifest.py
-- packages/core/src/graph_agent/_internal/config/settings.py (add the `flows`, `tools`, `llm`, `mcp` fields and switch the root model to reject unknown top-level keys)
+- packages/core/src/ranvier/_internal/config/settings.py (add the `flows`, `tools`, `llm`, `mcp` fields and switch the root model to reject unknown top-level keys)
 Shared files: none.
 
 ## Out of scope

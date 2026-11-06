@@ -41,8 +41,8 @@ Shared files: none.
 - [ ] no emojis, no AI attribution in code or commits; conventional commits
 
 ## Notes
-- design.md proposes 'agintis flows run unchanged on graph-agent' as the exit check; tasks.md says the criterion is undecided, so use the `examples/` flows and say so in the results.
+- design.md proposes 'agintis flows run unchanged on ranvier' as the exit check; tasks.md says the criterion is undecided, so use the `examples/` flows and say so in the results.
 - Do not modify `~/code/agintis*`; reading is fine.
 - Cost-free: fake model only, no provider keys.
 - Conventions: read `.claude/agents/_shared/python.md` and `_shared/decisions.md` first; never read `.env`; agintis is read-only reference.
-- From the T34 review (orchestrator): the exit check renders the starter (`uvx copier copy` with `--data graph_agent_repo=<local path>` and graph-agent pointed at the local repo), runs the rendered `uv sync` + `scripts/check.sh`, and brings up the full compose stack (api + worker, after T25/T26) with `uv run --env-file` / a dummy env file. Consider a platform CI job that renders the starter and runs its check.sh (follow-up, not v0.1-blocking).
+- From the T34 review (orchestrator): the exit check renders the starter (`uvx copier copy` with `--data ranvier_repo=<local path>` and ranvier pointed at the local repo), runs the rendered `uv sync` + `scripts/check.sh`, and brings up the full compose stack (api + worker, after T25/T26) with `uv run --env-file` / a dummy env file. Consider a platform CI job that renders the starter and runs its check.sh (follow-up, not v0.1-blocking).

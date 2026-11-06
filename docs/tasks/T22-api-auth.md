@@ -21,7 +21,7 @@ status: done
 - design.md §6 "HTTP API" intro (error body)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/api/auth.py
+- packages/core/src/ranvier/_internal/api/auth.py
 - packages/core/tests/unit/api/test_auth.py
 Shared files: none.
 

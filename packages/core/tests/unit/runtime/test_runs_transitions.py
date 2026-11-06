@@ -1,4 +1,4 @@
-from graph_agent._internal.runtime.runs import ErrorCode, RunError
+from ranvier._internal.runtime.runs import ErrorCode, RunError
 
 
 def test_run_error_roundtrip() -> None:

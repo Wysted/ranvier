@@ -4,7 +4,7 @@ import signal
 
 import pytest
 
-from graph_agent._internal.cli import _until_signalled
+from ranvier._internal.cli import _until_signalled
 
 TERM = signal.SIGTERM
 

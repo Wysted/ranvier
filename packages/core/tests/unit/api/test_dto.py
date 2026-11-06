@@ -4,8 +4,8 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from graph_agent._internal.api.dto import ERROR_STATUS, RunRequest, SseEncoder
-from graph_agent._internal.runtime.events import (
+from ranvier._internal.api.dto import ERROR_STATUS, RunRequest, SseEncoder
+from ranvier._internal.runtime.events import (
     CustomEvent,
     EndEvent,
     ErrorEvent,
@@ -17,7 +17,7 @@ from graph_agent._internal.runtime.events import (
     UsageTotals,
     ValuesEvent,
 )
-from graph_agent._internal.runtime.runs import ErrorCode
+from ranvier._internal.runtime.runs import ErrorCode
 
 
 def test_every_error_code_has_a_status() -> None:

@@ -20,11 +20,11 @@ Build agents from an `AgentSpec` over `create_agent`, expose `as_tool`, and comp
 - design.md §9 "Usage ledger" (`agent` = `AgentSpec.name`)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/factory.py
+- packages/core/src/ranvier/_internal/agents/factory.py
 - packages/core/tests/unit/agents/test_factory.py
-- packages/core/src/graph_agent/_internal/runtime/context.py (T12's file, earlier wave: wire `agent`, `tools`, `model` to the real collaborators)
+- packages/core/src/ranvier/_internal/runtime/context.py (T12's file, earlier wave: wire `agent`, `tools`, `model` to the real collaborators)
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/__init__.py (append `as_tool` to imports and `__all__`)
+- packages/core/src/ranvier/__init__.py (append `as_tool` to imports and `__all__`)
 
 ## Out of scope
 - Container edits (T15 already wires registry and MCP)

@@ -1,6 +1,6 @@
-# graph-agent design (v0.1)
+# ranvier design (v0.1)
 
-graph-agent is an installable Python package that runs plain LangGraph 1.x `StateGraph` flows in production: it registers them from a manifest, executes them durably on Postgres, exposes them over CLI, HTTP/SSE and a queue worker, and ships a small kit to build subagents. Product repos install it by git tag and own only their flows, tools and config.
+ranvier is an installable Python package that runs plain LangGraph 1.x `StateGraph` flows in production: it registers them from a manifest, executes them durably on Postgres, exposes them over CLI, HTTP/SSE and a queue worker, and ships a small kit to build subagents. Product repos install it by git tag and own only their flows, tools and config.
 
 Source of truth for the "why": `.claude/agents/_shared/decisions.md` (decision log), `reports/Plataforma de flujos sobre LangGraph.md`, `reports/Rendimiento de Python en la plataforma.md`. Items marked **(OD-n)** follow the recommendation of an open decision at the end of this document.
 
@@ -9,7 +9,7 @@ Source of truth for the "why": `.claude/agents/_shared/decisions.md` (decision l
 | Area | Decision | Justification |
 |------|----------|---------------|
 | Flow authoring | Plain `StateGraph`; no DSL, no wrapper base class | Decision log: users write plain LangGraph |
-| Discovery | Explicit manifest `graph-agent.toml`, `name -> "module:object"` | Decision log; same syntax as `langgraph.json` |
+| Discovery | Explicit manifest `ranvier.toml`, `name -> "module:object"` | Decision log; same syntax as `langgraph.json` |
 | Execution | One runner function; Postgres checkpointer; runs table with leases | Checkpoint is not durable execution (platform report) |
 | Queue and cron | Procrastinate on Postgres, `lock=thread_id`, periodic stalled-job requeue | Decision log (verified) |
 | HTTP | Own FastAPI API borrowing `threads`/`runs`/`thread_id`/`run_id`, no compatibility claim | Decision log (option A) |
@@ -17,7 +17,7 @@ Source of truth for the "why": `.claude/agents/_shared/decisions.md` (decision l
 | MCP | Own adapter over the official `mcp` SDK v2 (`mcp>=2.3,<3`, `mcp.Client`) behind the `McpToolSource` port; Streamable HTTP only | Decision log (supersedes `langchain.mcp.MCPAdapter` beta and the archived `langchain-mcp-adapters`) |
 | Concurrency | Global limits owned by the platform (LangGraph has none) | Performance report, "features the package must provide" |
 | Python | `requires-python >=3.13`; images on CPython 3.14.5+ **(OD-7)** | Performance report: 3.14.0-3.14.4 GC regression |
-| Name | Distribution `graph-agent`, import `graph_agent` (working name, renameable: only the facade and the manifest default path carry it) | Brief |
+| Name | Distribution `ranvier`, import `ranvier` (working name, renameable: only the facade and the manifest default path carry it) | Brief |
 
 ## 1. Purpose and non-goals
 
@@ -36,16 +36,16 @@ Source of truth for the "why": `.claude/agents/_shared/decisions.md` (decision l
 ### Workspace
 
 ```text
-graph-agent/
+ranvier/
   pyproject.toml          # uv workspace root: dev tools only, never published
   uv.lock
   copier.yml              # _subdirectory: starter (Copier needs it at repo root)
-  packages/core/          # distribution "graph-agent"; installed by products
+  packages/core/          # distribution "ranvier"; installed by products
     pyproject.toml        # deps, extras, ruff/mypy/import-linter config
-    src/graph_agent/
+    src/ranvier/
     tests/{unit,integration}/
-  examples/               # workspace member; depends on graph-agent {workspace = true}
-    graph-agent.toml
+  examples/               # workspace member; depends on ranvier {workspace = true}
+    ranvier.toml
     src/examples/flows/   # hello (plain), approval (interrupt), research (subagent + MCP)
     tests/
   starter/                # Copier template rendered into product repos
@@ -55,20 +55,20 @@ graph-agent/
   docs/design.md
 ```
 
-One git tag (`v0.1.0`) versions both the package and the starter, so `copier update` and the dependency pin move together. Products depend on `graph-agent @ git+https://<host>/graph-agent@v0.1.0#subdirectory=packages/core` (to verify, see open checks).
+One git tag (`v0.1.0`) versions both the package and the starter, so `copier update` and the dependency pin move together. Products depend on `ranvier @ git+https://github.com/Wysted/ranvier.git@v0.1.0#subdirectory=packages/core` (to verify, see open checks).
 
 ### Core package
 
 Size target: under ~5k loc for v0.1 (agintis core is ~32k). Single-file concerns are modules, not packages.
 
 ```text
-graph_agent/
+ranvier/
   __init__.py             # public facade: re-exports only (section 3)
   testing.py              # public test kit (section 11)
   py.typed
   _internal/
     config/
-      settings.py         # one root Settings: env + .env + graph-agent.toml
+      settings.py         # one root Settings: env + .env + ranvier.toml
       manifest.py         # flows/tools/crons/mcp models, lazy "module:object" import
     db/
       pool.py             # psycopg pools (app, checkpointer) and budget logging
@@ -111,7 +111,7 @@ graph_agent/
 | # | Contract | Rule |
 |---|----------|------|
 | C1 | Layers | `cli` > `api \| worker` > `bootstrap` > `runtime` > `agents` > `llm \| limits \| usage \| observability \| queue` > `db \| config` (siblings independent) |
-| C2 | Facade direction | `graph_agent._internal` never imports `graph_agent.testing`; examples and starter forbid `graph_agent._internal` |
+| C2 | Facade direction | `ranvier._internal` never imports `ranvier.testing`; examples and starter forbid `ranvier._internal` |
 | C3 | Web stays at the edge | `fastapi`, `starlette` only in `api`; `uvicorn` only in `api` and `cli` |
 | C4 | Queue stays at the edge | `procrastinate` only in `queue` and `worker` |
 | C5 | LangGraph surface | `langgraph` only in `runtime`, `agents`, facade, `testing`; `langchain`/`langchain_core` additionally in `llm`, `usage` |
@@ -122,10 +122,10 @@ Ruff `banned-api` (import-linter cannot target external subpackages): `mcp` outs
 
 ## 3. Public API
 
-Everything users import lives in `graph_agent` and `graph_agent.testing`. Anything under `_internal` may change in any release. Every type a user returns or raises from a declared extension point (auth hook, flow factory) is exported here.
+Everything users import lives in `ranvier` and `ranvier.testing`. Anything under `_internal` may change in any release. Every type a user returns or raises from a declared extension point (auth hook, flow factory) is exported here.
 
 ```python
-# graph_agent/__init__.py
+# ranvier/__init__.py
 __all__ = ["AgentSpec", "AuthError", "FlowContext", "Principal", "RunContext", "as_tool", "__version__"]
 
 # Principal(subject, tenant_id) and AuthError are re-exported from _internal.api.auth:
@@ -171,7 +171,7 @@ Event emission, interrupts, `Command`, `Send` and subgraphs are plain LangGraph 
 
 ## 4. Flow contract and manifest
 
-### Manifest (`graph-agent.toml`, product repo root; path override `GRAPH_AGENT_CONFIG`)
+### Manifest (`ranvier.toml`, product repo root; path override `RANVIER_CONFIG`)
 
 ```toml
 [flows.summarize]
@@ -208,7 +208,7 @@ Profiles, MCP servers and limits live in the same file (sections 7-10).
 
 Flows are compiled lazily on first use per process and cached; a build failure fails that run with `flow_build_failed` (retryable) instead of blocking the process. The runner always passes a `RunContext` instance, so `runtime.context` is that object whether or not the flow declares `context_schema`; declaring `context_schema=RunContext` is optional and only adds typing (S1).
 
-### Validation: `graph-agent validate [--diagram] [--offline]`
+### Validation: `ranvier validate [--diagram] [--offline]`
 
 Imports every flow and tool target, checks the object kind, builds factories (with fake models and no MCP when `--offline`), compiles against `InMemorySaver`, checks names (`^[a-z][a-z0-9_]{0,62}$`), versions (positive int), cron expressions (exactly 5 fields: a 6th field would be seconds as the last column), referenced profiles and MCP servers. `--diagram` prints Mermaid per flow. Exit code non-zero on any error; errors name the manifest key.
 
@@ -227,7 +227,7 @@ Flow names, versions, node names and state schemas are data stored in runs and c
 
 ### Single runner
 
-`execute_run(run_id)` is the only way a flow runs against Postgres (CLI, HTTP inline, worker, cron, recovery). Its DB-free core `stream_graph` (R2) is what `run --memory` and `graph_agent.testing` use; it does not apply the run timeout, so callers outside `execute_run` reuse the runner's pump pattern (bounded queue, `aclosing`, timeout) when they need one:
+`execute_run(run_id)` is the only way a flow runs against Postgres (CLI, HTTP inline, worker, cron, recovery). Its DB-free core `stream_graph` (R2) is what `run --memory` and `ranvier.testing` use; it does not apply the run timeout, so callers outside `execute_run` reuse the runner's pump pattern (bounded queue, `aclosing`, timeout) when they need one:
 
 1. **Claim**: conditional `UPDATE runs SET status='running', lease_owner, lease_expires_at, attempt=attempt+1` where status is `pending`, or `running` with an expired lease. No row updated: another executor owns it, return.
 2. **Resolve** the flow (lazy compile cache) and check its version against the thread.
@@ -239,7 +239,7 @@ Cleanup after a cancellation (finish, release, defer) runs in a detached task aw
 
 Input on step 3: original input or `Command(resume=...)` on the first attempt; on a recovery attempt `None` if the latest checkpoint's `metadata["run_id"]` (read with `checkpointer.aget_tuple`) equals this `run_id`, otherwise the original input again. `run_id` goes in `config["metadata"]` as a `str`. LangGraph applies the same rule itself (re-sending the original input with the same `metadata.run_id` is a re-entry), so the check is a safety belt, not the only guard (S1). `GraphDrained` (a `GraphBubbleUp`) is caught before generic error handling: the runner releases the lease for re-claim (`release_for_drain`: lease expired now, attempt given back, token rotated) and defers the job; the run never goes back to `pending`.
 
-### Runs table (`graph_agent.runs`)
+### Runs table (`ranvier.runs`)
 
 | Column | Notes |
 |--------|-------|
@@ -279,19 +279,19 @@ Claims make both recovery paths idempotent: the job that loses the claim exits. 
 
 ### Interrupts, cancellation, idempotency
 
-- **Interrupts**: the run ends `interrupted`; the checkpoint is the source of truth (`GET /threads/{id}/state`). Resume sends `command.resume` as a map `{interrupt_id: value}` (a bare value is accepted only with exactly one pending interrupt). New `input` on a thread with pending interrupts is rejected (`409 thread_interrupted`), because LangGraph would silently discard them. The request-time check is a fast fail: `execute_run` re-checks the command after the claim (not on a recovery attempt), so a run queued behind one that later paused ends `error` with `thread_interrupted` (or `invalid_request` for a stale resume map) without running a node; `graph_agent.testing.run_flow` applies the same rule and raises `ValueError`.
+- **Interrupts**: the run ends `interrupted`; the checkpoint is the source of truth (`GET /threads/{id}/state`). Resume sends `command.resume` as a map `{interrupt_id: value}` (a bare value is accepted only with exactly one pending interrupt). New `input` on a thread with pending interrupts is rejected (`409 thread_interrupted`), because LangGraph would silently discard them. The request-time check is a fast fail: `execute_run` re-checks the command after the claim (not on a recovery attempt), so a run queued behind one that later paused ends `error` with `thread_interrupted` (or `invalid_request` for a stale resume map) without running a node; `ranvier.testing.run_flow` applies the same rule and raises `ValueError`.
 - **Cancellation**: pending runs are cancelled in the row; running runs are cancelled at the next heartbeat (latency at most `heartbeat_s`). Cancellation propagates through task cancellation to tools, subagents and MCP calls; thread-bound sync tools cannot be stopped, which is why they have their own bounded pool.
 - **Idempotency** (guidance shipped in the starter README): side-effect nodes run at least once more after a crash or a resume. Derive idempotency keys from durable state written by an earlier node (not from `run_id`: a resume is a new run), use `durability="sync"` for flows with side effects, and keep `interrupt()` nodes separate from side-effect nodes.
 
 ## 6. Entry points
 
-### CLI (`graph-agent`, argparse)
+### CLI (`ranvier`, argparse)
 
 | Command | Does |
 |---------|------|
 | `validate [--diagram] [--offline]` | Section 4 |
 | `run <flow> --input JSON [--thread ID] [--resume JSON] [--memory]` | Inline run printing events; `--memory` uses `InMemorySaver` and no database |
-| `serve` | uvicorn with the API; SIGTERM/SIGINT drain inline runs (stream ends with `run_handed_over`) and exit 0; signal handlers cover the container close. Only `graph-agent serve` drains early: embedding `create_app` elsewhere drains at lifespan close |
+| `serve` | uvicorn with the API; SIGTERM/SIGINT drain inline runs (stream ends with `run_handed_over`) and exit 0; signal handlers cover the container close. Only `ranvier serve` drains early: embedding `create_app` elsewhere drains at lifespan close |
 | `worker` | Procrastinate worker: execute, sweep, prune, crons; SIGTERM/SIGINT stop fetching, drain, wait for jobs, hand over, exit 0 |
 | `migrate` | Own SQL migrations, `checkpointer.setup()`, Procrastinate schema |
 | `crons` | Lists declared crons with next fire time (UTC) |
@@ -315,7 +315,7 @@ Inline streamed runs execute in the API process; background runs and crons go th
 | `GET /threads/{thread_id}/state` | `values`, `next`, `interrupts`, `checkpoint_id` | 200 |
 | `DELETE /threads/{thread_id}` | Delete checkpoints and runs (refused while running); queued (pending) runs are discarded and their Procrastinate jobs exit at the claim (LOST) silently | 204 |
 
-Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`; client metadata keys starting with `graph_agent_`, `ls_` or `langgraph_` are dropped from the LangGraph config (the platform reads them) but kept on the run row. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`. After shutdown starts, inline runs get `503 shutting_down` (retryable).
+Run request body: `{flow, input | command: {resume}, stream_mode?: ["updates","values","messages","custom"], metadata?}`; client metadata keys starting with `ranvier_`, `ls_` or `langgraph_` are dropped from the LangGraph config (the platform reads them) but kept on the run row. Default `stream_mode` is `["updates", "custom"]`; token streaming is opt-in by asking for `messages` **(OD-8)**. Admission: when `limits.max_active_runs` is full, inline runs wait up to `limits.admission_wait_s` and then get `429 too_many_runs`. After shutdown starts, inline runs get `503 shutting_down` (retryable).
 
 ### SSE events
 
@@ -367,7 +367,7 @@ timeout_s = 30
 
 | Extra | Reserved surface | Trigger to build |
 |-------|------------------|------------------|
-| `[rag]` | `graph_agent.rag.make_retriever_tool(store, *, name, description, k)` over `PGVectorStore` | First product flow needing retrieval |
+| `[rag]` | `ranvier.rag.make_retriever_tool(store, *, name, description, k)` over `PGVectorStore` | First product flow needing retrieval |
 | `[deepagents]` | `AgentSpec`-to-`create_deep_agent` builder | A case needing file-working agents; verify it works as a node first |
 
 ## 8. Concurrency and resilience
@@ -408,17 +408,17 @@ timeout_s = 60
 
 Kept rules: keyed providers must name `api_key_env`; `base_url` must be https except localhost; `stream_usage=True` for every `openai` profile, api.openai.com included (a shared `http_async_client` turns off langchain-openai's default); anthropic streams usage by default and ollama always reports it. Ollama has no `timeout`/`max_retries` fields: the timeout goes into `async_client_kwargs`, retries are not supported (S3). Built with `init_chat_model`; provider packages are extras (`[openai]`, `[anthropic]`, `[ollama]`).
 
-**Observability** (`[otel]` extra): OpenInference LangChain instrumentation exported via OTLP; backend chosen by config (Phoenix today). Span attributes `graph_agent.flow`, `graph_agent.run_id`, `graph_agent.thread_id` defined in one module. Boot fails if LangSmith tracing env vars are on (ported guard). Metrics (loop lag, executor occupancy, pool stats, semaphore waiters, active runs) go through OTel when enabled, else to logs.
+**Observability** (`[otel]` extra): OpenInference LangChain instrumentation exported via OTLP; backend chosen by config (Phoenix today). Span attributes `ranvier.flow`, `ranvier.run_id`, `ranvier.thread_id` defined in one module. Boot fails if LangSmith tracing env vars are on (ported guard). Metrics (loop lag, executor occupancy, pool stats, semaphore waiters, active runs) go through OTel when enabled, else to logs.
 
-**Usage ledger**: a per-run callback aggregates `usage_metadata` per `(model, agent)`; the agent is read in `on_chat_model_start` from the metadata key `graph_agent_agent`, which `build_agent` sets on a `model_copy` of the profile model (local callback metadata, so the innermost agent wins); `lc_agent_name` is not used because a parent agent's value overrides it when the subagent runs with the parent's config (S3); rows are upserted at run end, including failed and recovered runs (attempts accumulate).
+**Usage ledger**: a per-run callback aggregates `usage_metadata` per `(model, agent)`; the agent is read in `on_chat_model_start` from the metadata key `ranvier_agent`, which `build_agent` sets on a `model_copy` of the profile model (local callback metadata, so the innermost agent wins); `lc_agent_name` is not used because a parent agent's value overrides it when the subagent runs with the parent's config (S3); rows are upserted at run end, including failed and recovered runs (attempts accumulate).
 
-| `graph_agent.usage` column | Notes |
+| `ranvier.usage` column | Notes |
 |----------------------------|-------|
 | `run_id`, `model`, `agent` (PK) | `agent` = `AgentSpec.name`, `""` for direct flow calls |
 | `flow`, `thread_id`, `tenant_id`, `created_at` | Reporting dimensions |
 | `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `calls` | Raw counts only |
 
-Money is never stored: `graph-agent usage` prices rows at read time with `genai-prices`; unknown models are reported as unpriced, never as $0.
+Money is never stored: `ranvier usage` prices rows at read time with `genai-prices`; unknown models are reported as unpriced, never as $0.
 
 ## 10. Configuration and persistence
 
@@ -427,23 +427,23 @@ Money is never stored: `graph-agent usage` prices rows at read time with `genai-
 | Rule | Value |
 |------|-------|
 | One root `Settings` | Nested pydantic models per group (`database`, `api`, `limits`, `llm`, `mcp`, `observability`, `runs`, `threads`), plus the manifest (`flows`, `tools`) |
-| Precedence | init args > environment > `.env` > `graph-agent.toml` > defaults |
-| Environment | Prefix `GRAPH_AGENT_`, nested delimiter `__` (`GRAPH_AGENT_DATABASE__URL`) |
-| Files | One `.env` (path `GRAPH_AGENT_ENV_FILE`), one `graph-agent.toml` (path `GRAPH_AGENT_CONFIG`); both bootstrap variables are read from the process environment only, never from the `.env` itself; an explicit `_env_file=None` always wins |
+| Precedence | init args > environment > `.env` > `ranvier.toml` > defaults |
+| Environment | Prefix `RANVIER_`, nested delimiter `__` (`RANVIER_DATABASE__URL`) |
+| Files | One `.env` (path `RANVIER_ENV_FILE`), one `ranvier.toml` (path `RANVIER_CONFIG`); both bootstrap variables are read from the process environment only, never from the `.env` itself; an explicit `_env_file=None` always wins |
 | Secrets | Env only; the TOML holds env var names (`api_key_env`, `headers_env`) |
-| Tests | `Settings(_env_file=None)` with explicit values and `GRAPH_AGENT_CONFIG` pointing at a temp TOML (pydantic-settings has no `_toml_file` kwarg); fixtures clear every `GRAPH_AGENT_*` variable; no global cache |
+| Tests | `Settings(_env_file=None)` with explicit values and `RANVIER_CONFIG` pointing at a temp TOML (pydantic-settings has no `_toml_file` kwarg); fixtures clear every `RANVIER_*` variable; no global cache |
 
 **Persistence:**
 
 | Schema | Owner | Setup |
 |--------|-------|-------|
-| `graph_agent` (`runs`, `usage`, `schema_version`, `procrastinate_migrations`) | graph-agent | `migrate`: numbered SQL files, one transaction, advisory lock **(OD-5)** |
+| `ranvier` (`runs`, `usage`, `schema_version`, `procrastinate_migrations`) | ranvier | `migrate`: numbered SQL files, one transaction, advisory lock **(OD-5)** |
 | LangGraph checkpoints | `langgraph-checkpoint-postgres` | `AsyncPostgresSaver.setup()`; pool with `autocommit=True`, `prepare_threshold=0`, `dict_row` |
-| Procrastinate | Procrastinate | `migrate`: fresh DB -> `schema.sql` + record every shipped migration file name as applied; existing DB -> apply shipped files not yet recorded, in name order, one transaction each, under the migrations advisory lock; record table `graph_agent.procrastinate_migrations`. Upgrading Procrastinate requires stopping the API and workers before `migrate` (pre and post files applied together); see S4 |
+| Procrastinate | Procrastinate | `migrate`: fresh DB -> `schema.sql` + record every shipped migration file name as applied; existing DB -> apply shipped files not yet recorded, in name order, one transaction each, under the migrations advisory lock; record table `ranvier.procrastinate_migrations`. Upgrading Procrastinate requires stopping the API and workers before `migrate` (pre and post files applied together); see S4 |
 
 ## 11. Testing
 
-**Kit shipped to users (`graph_agent.testing`):**
+**Kit shipped to users (`ranvier.testing`):**
 
 ```python
 class FakeChatModel(
@@ -482,7 +482,7 @@ async def run_flow(
 
 Testing a flow: build `flow_context(models={"fast": FakeChatModel([...])})`, call `run_flow`, assert on `values`; call again with the same `thread_id` and `resume=` to test interrupts. `input` and `resume` are exclusive. `resume` follows LangGraph's rule: a dict whose keys are all 32-hex interrupt ids (including `{}`) is an id map and must name only pending ids; any other value resumes the single pending interrupt. `run_flow` applies no run timeout (bound tests with `asyncio.timeout`).
 
-`graph_agent.testing` also re-exports the event types so tests outside `_internal` can assert on `FlowResult.events`: `RunEvent` (union), `MetadataEvent`, `UpdatesEvent`, `ValuesEvent`, `MessagesEvent`, `CustomEvent`, `InterruptEvent`, `InterruptItem`, `EndEvent`, `ErrorEvent`, `UsageTotals`.
+`ranvier.testing` also re-exports the event types so tests outside `_internal` can assert on `FlowResult.events`: `RunEvent` (union), `MetadataEvent`, `UpdatesEvent`, `ValuesEvent`, `MessagesEvent`, `CustomEvent`, `InterruptEvent`, `InterruptItem`, `EndEvent`, `ErrorEvent`, `UsageTotals`.
 
 **Platform test layers:**
 
@@ -500,8 +500,8 @@ Copier template contents (only what the product owns, so `copier update` merges 
 
 | File | Purpose |
 |------|---------|
-| `pyproject.toml` | Pins `graph-agent` by tag and extras; ruff/mypy/import-linter (forbids `graph_agent._internal`) |
-| `graph-agent.toml` | One example flow, one profile, limits |
+| `pyproject.toml` | Pins `ranvier` by tag and extras; ruff/mypy/import-linter (forbids `ranvier._internal`) |
+| `ranvier.toml` | One example flow, one profile, limits |
 | `src/<pkg>/flows/example.py`, `tests/test_example.py` | Plain `StateGraph` flow and its fake-model test |
 | `.env.example`, `docker-compose.yml`, `Dockerfile` (CPython 3.14.5+ slim, uv) | Runtime |
 | `scripts/check.sh`, CI workflow | Same gate as the platform |
@@ -541,7 +541,7 @@ Product extension points: flows, tools and MCP servers via the manifest; agent b
 - [ ] 9. Agents kit: `AgentSpec`, factory, tool registry and isolation, `as_tool`, skills middleware, MCP port with the own adapter over the `mcp` SDK v2 (tested against an in-process FastMCP server from the same SDK); `examples/` research flow.
 - [ ] 10. Usage ledger and `usage` report; OTel attributes and metrics.
 - [ ] 11. Starter (Copier) and `copier update` documentation.
-- [ ] 12. Bench run and exit check: agintis' flows run unchanged on graph-agent (the migration itself happens in the agintis repo).
+- [ ] 12. Bench run and exit check: agintis' flows run unchanged on ranvier (the migration itself happens in the agintis repo).
 
 ### Out of scope for v0.1
 
@@ -568,7 +568,7 @@ All eight were resolved by adopting the resolution below. OD-1 was confirmed by 
 | OD-3 | Threads table | (a) None: thread flow, version and tenant pinned by its first run, listing by `runs`; (b) small `threads` table (owner, flow, metadata, TTL) | (a): honors "own tables: runs, usage"; add (b) when thread metadata or listing per tenant gets slow |
 | OD-4 | Default durability | (a) `sync` default, `async`/`exit` per flow; (b) `async` default (performance report) | (a): the platform report ties recovery of side-effect flows to `sync`; flows without effects opt into `async` |
 | OD-5 | Migrations for own tables | (a) Numbered SQL files + ~60-line runner; (b) Alembic + SQLAlchemy Core (agintis) | (a): two tables do not justify SQLAlchemy and Alembic as runtime dependencies of every product |
-| OD-6 | Config file format | (a) One `graph-agent.toml` (manifest, profiles, MCP, limits); (b) TOML manifest + YAML profiles (brief, agintis); (c) manifest in `pyproject.toml` `[tool.graph-agent]` (platform report) | (a): one file, stdlib `tomllib`, no PyYAML; runtime config does not belong in packaging metadata |
+| OD-6 | Config file format | (a) One `ranvier.toml` (manifest, profiles, MCP, limits); (b) TOML manifest + YAML profiles (brief, agintis); (c) manifest in `pyproject.toml` `[tool.ranvier]` (platform report) | (a): one file, stdlib `tomllib`, no PyYAML; runtime config does not belong in packaging metadata |
 | OD-7 | Python floor | (a) `>=3.13`, images on 3.14.5+; (b) `>=3.14` | (a) until langgraph classifies 3.14; then (b), which also removes the 3.13 `_processes` backport in `limits.py` |
 | OD-8 | Token streaming | (a) Opt-in per request via `stream_mode` `messages` (client filters by `node`); (b) opt-in per model via a tag (agintis `streamed()`) | (a): no platform helper, LangGraph vocabulary; add a tag filter only if bandwidth becomes a problem |
 
@@ -580,8 +580,8 @@ Found while writing `docs/tasks/`; each brief already follows them.
 |---|------------|-----|
 | R1 | `runtime/checkpointer.py` exposes `setup_checkpointer`; the `migrate` CLI chains own SQL migrations, checkpointer setup and (from T25) the Procrastinate schema | `db` cannot import `runtime` (C1); `queue` lands after `migrate` |
 | R2 | `runtime/runner.py` splits `stream_graph` (no database) from `execute_run` (claim, leases, finish) | `run --memory` and tests must run a flow without Postgres |
-| R3 | New module `runtime/offline.py`: fake chat model used by `validate --offline`; `graph_agent.testing` re-exports it | `_internal` cannot import `testing` (C2) and `validate` lands before the testing kit |
+| R3 | New module `runtime/offline.py`: fake chat model used by `validate --offline`; `ranvier.testing` re-exports it | `_internal` cannot import `testing` (C2) and `validate` lands before the testing kit |
 | R4 | `RunQueue` Protocol defined in the runtime (T16), implemented by `queue.py` (T24) | background endpoints (T23) must not depend on the worker task |
 | R5 | `Settings` grows in two steps: scalar groups first (T04), then `flows`, `tools`, `llm`, `mcp` (T05) | manifest models are owned by T05 |
-| R6 | `graph_agent.testing.flow_context(..., mcp=None)` accepts a fake MCP tool source | the research example (T31) is tested without network |
+| R6 | `ranvier.testing.flow_context(..., mcp=None)` accepts a fake MCP tool source | the research example (T31) is tested without network |
 | R7 | Defaults not fixed above (`runs.heartbeat_s`, `runs.lease_s`, `runs.max_attempts`, `threads.*`, API port) are named constants chosen in T04 and reported back | keep magic numbers out of the code |

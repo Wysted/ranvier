@@ -287,7 +287,7 @@ async def check_openai() -> None:
     print(
         f"  sdk timeout={sdk.timeout} max_retries={sdk.max_retries} stream_usage={m.stream_usage}"
     )  # type: ignore[attr-defined]
-    copy = m.model_copy(update={"metadata": {"graph_agent_agent": "x"}})
+    copy = m.model_copy(update={"metadata": {"ranvier_agent": "x"}})
     print(f"  model_copy keeps client: {copy.root_async_client._client is shared}")  # type: ignore[attr-defined]
     await shared.aclose()
 
@@ -376,7 +376,7 @@ async def check_anthropic() -> None:
         print(
             f"  seeded _async_client: same_instance={same} sdk timeout={sdk.timeout} max_retries={sdk.max_retries}"
         )
-        copy = a.model_copy(update={"metadata": {"graph_agent_agent": "x"}})  # type: ignore[union-attr]
+        copy = a.model_copy(update={"metadata": {"ranvier_agent": "x"}})  # type: ignore[union-attr]
         print(f"  model_copy keeps client: {copy._async_client._client is shared}")
         print(f"  seeded Limits({MAX_CONNECTIONS}): {await burst(stub, [a, b])}")  # type: ignore[list-item]
         print(f"  seeded Limits, streaming: {await burst(stub, [a, b], stream=True)}")  # type: ignore[list-item]

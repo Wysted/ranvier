@@ -21,7 +21,7 @@ One `open_container(settings, *, memory=False)` async context manager that build
 - design.md §7 table rows "Tool registry" and "MCP port"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/bootstrap.py
+- packages/core/src/ranvier/_internal/bootstrap.py
 - packages/core/tests/unit/test_bootstrap.py
 - packages/core/tests/integration/test_bootstrap.py
 Shared files: none.

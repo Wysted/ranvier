@@ -9,9 +9,9 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "graph-agent",
-    "graph-agent-examples",
-    "graph-agent-workspace",
+    "ranvier",
+    "ranvier-examples",
+    "ranvier-workspace",
 ]
 
 [[package]]
@@ -512,116 +512,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/62/b6/bc095b23a3e0d978e75c8c18cabe4c11f791837410670e4486f0d539bfba/googleapis_common_protos-1.76.0.tar.gz", hash = "sha256:71db0e44a1d4c2dd024ebad44ca67129cc1e2892e4861df466764749d5ef8642", size = 156250, upload-time = "2026-10-22T23:43:36.263Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/05/6d/78dc67a9e779e594b49bf62604034d3a6aa428a55afc729cafda4b7333e1/googleapis_common_protos-1.76.0-py3-none-any.whl", hash = "sha256:59e13344a9f3651aa201a03e2bee815a3bf43a4baf1f9ff8a9b62a840ce25fac", size = 307707, upload-time = "2026-10-22T23:43:10.445Z" },
-]
-
-[[package]]
-name = "graph-agent"
-version = "0.1.0"
-source = { editable = "packages/core" }
-dependencies = [
-    { name = "croniter" },
-    { name = "fastapi" },
-    { name = "genai-prices" },
-    { name = "httpx" },
-    { name = "httpx2" },
-    { name = "langchain" },
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-postgres" },
-    { name = "mcp" },
-    { name = "procrastinate" },
-    { name = "psycopg", extra = ["binary", "pool"] },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyyaml" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-anthropic = [
-    { name = "langchain-anthropic" },
-]
-ollama = [
-    { name = "langchain-ollama" },
-]
-openai = [
-    { name = "langchain-openai" },
-]
-otel = [
-    { name = "openinference-instrumentation-langchain" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "croniter", specifier = ">=6,<7" },
-    { name = "fastapi", specifier = ">=0.162.0,<0.163" },
-    { name = "genai-prices", specifier = ">=0.2.1,<0.3" },
-    { name = "httpx", specifier = ">=0.28.1,<1" },
-    { name = "httpx2", specifier = ">=2.16,<3" },
-    { name = "langchain", specifier = "==1.4.*" },
-    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.6,<1.8" },
-    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.7.2,<2" },
-    { name = "langgraph", specifier = ">=1.2.15,<2" },
-    { name = "langgraph-checkpoint-postgres", specifier = ">=3.2.0,<4" },
-    { name = "mcp", specifier = ">=2.3,<3" },
-    { name = "openinference-instrumentation-langchain", marker = "extra == 'otel'", specifier = ">=0.1.79,<0.2" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.45.1,<2" },
-    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.45.1,<2" },
-    { name = "procrastinate", specifier = ">=3,<4" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.6" },
-    { name = "pydantic", specifier = ">=2.12,<3" },
-    { name = "pydantic-settings", specifier = ">=2.16.0" },
-    { name = "pyyaml", specifier = ">=6,<7" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0,<0.55" },
-]
-provides-extras = ["openai", "anthropic", "ollama", "otel"]
-
-[[package]]
-name = "graph-agent-examples"
-version = "0.0.0"
-source = { editable = "examples" }
-dependencies = [
-    { name = "graph-agent" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "graph-agent", editable = "packages/core" }]
-
-[[package]]
-name = "graph-agent-workspace"
-version = "0.0.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "blockbuster" },
-    { name = "graph-agent", extra = ["anthropic", "ollama", "openai", "otel"] },
-    { name = "graph-agent-examples" },
-    { name = "import-linter" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "types-croniter" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "blockbuster", specifier = ">=1.5" },
-    { name = "graph-agent", extras = ["openai", "anthropic", "ollama", "otel"], editable = "packages/core" },
-    { name = "graph-agent-examples", editable = "examples" },
-    { name = "import-linter", specifier = ">=2.15" },
-    { name = "mypy", specifier = ">=2.4.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
-    { name = "ruff", specifier = ">=0.17.1" },
-    { name = "types-croniter", specifier = ">=6" },
-    { name = "types-pyyaml", specifier = ">=6" },
 ]
 
 [[package]]
@@ -2079,6 +1969,116 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "ranvier"
+version = "0.1.0"
+source = { editable = "packages/core" }
+dependencies = [
+    { name = "croniter" },
+    { name = "fastapi" },
+    { name = "genai-prices" },
+    { name = "httpx" },
+    { name = "httpx2" },
+    { name = "langchain" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-postgres" },
+    { name = "mcp" },
+    { name = "procrastinate" },
+    { name = "psycopg", extra = ["binary", "pool"] },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "langchain-anthropic" },
+]
+ollama = [
+    { name = "langchain-ollama" },
+]
+openai = [
+    { name = "langchain-openai" },
+]
+otel = [
+    { name = "openinference-instrumentation-langchain" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "croniter", specifier = ">=6,<7" },
+    { name = "fastapi", specifier = ">=0.162.0,<0.163" },
+    { name = "genai-prices", specifier = ">=0.2.1,<0.3" },
+    { name = "httpx", specifier = ">=0.28.1,<1" },
+    { name = "httpx2", specifier = ">=2.16,<3" },
+    { name = "langchain", specifier = "==1.4.*" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.6,<1.8" },
+    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.7.2,<2" },
+    { name = "langgraph", specifier = ">=1.2.15,<2" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.2.0,<4" },
+    { name = "mcp", specifier = ">=2.3,<3" },
+    { name = "openinference-instrumentation-langchain", marker = "extra == 'otel'", specifier = ">=0.1.79,<0.2" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.45.1,<2" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.45.1,<2" },
+    { name = "procrastinate", specifier = ">=3,<4" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.6" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
+    { name = "pydantic-settings", specifier = ">=2.16.0" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0,<0.55" },
+]
+provides-extras = ["openai", "anthropic", "ollama", "otel"]
+
+[[package]]
+name = "ranvier-examples"
+version = "0.0.0"
+source = { editable = "examples" }
+dependencies = [
+    { name = "ranvier" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "ranvier", editable = "packages/core" }]
+
+[[package]]
+name = "ranvier-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "blockbuster" },
+    { name = "import-linter" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ranvier", extra = ["anthropic", "ollama", "openai", "otel"] },
+    { name = "ranvier-examples" },
+    { name = "ruff" },
+    { name = "types-croniter" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "blockbuster", specifier = ">=1.5" },
+    { name = "import-linter", specifier = ">=2.15" },
+    { name = "mypy", specifier = ">=2.4.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "ranvier", extras = ["openai", "anthropic", "ollama", "otel"], editable = "packages/core" },
+    { name = "ranvier-examples", editable = "examples" },
+    { name = "ruff", specifier = ">=0.17.1" },
+    { name = "types-croniter", specifier = ">=6" },
+    { name = "types-pyyaml", specifier = ">=6" },
 ]
 
 [[package]]

@@ -24,29 +24,29 @@ from langgraph.graph import END, START, StateGraph
 from psycopg_pool import AsyncConnectionPool
 from pydantic import SecretStr
 
-from graph_agent._internal.api.app import DrainingServer, create_app
-from graph_agent._internal.bootstrap import Container, ShutdownBudget
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import (
+from integration._resources import GRACE_S, Resources
+from ranvier._internal.api.app import DrainingServer, create_app
+from ranvier._internal.bootstrap import Container, ShutdownBudget
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import (
     DatabaseSettings,
     LimitsSettings,
     RunsSettings,
     Settings,
 )
-from graph_agent._internal.db.migrate import advisory_lock, apply_migrations
-from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
-from graph_agent._internal.queue import (
+from ranvier._internal.db.migrate import advisory_lock, apply_migrations
+from ranvier._internal.db.pool import open_app_pool, open_checkpointer_pool
+from ranvier._internal.queue import (
     RECOVERY_PRIORITY,
     ProcrastinateRunQueue,
     apply_procrastinate_schema,
     make_app,
 )
-from graph_agent._internal.runtime.checkpointer import setup_checkpointer
-from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import ActiveRuns, execute_run
-from graph_agent._internal.runtime.runs import RunsRepository, RunStatus
-from graph_agent._internal.worker import run_worker
-from integration._resources import GRACE_S, Resources
+from ranvier._internal.runtime.checkpointer import setup_checkpointer
+from ranvier._internal.runtime.flows import FlowRegistry
+from ranvier._internal.runtime.runner import ActiveRuns, execute_run
+from ranvier._internal.runtime.runs import RunsRepository, RunStatus
+from ranvier._internal.worker import run_worker
 
 MODULE = "t26_integration_flows"
 FLOW = "steps"
@@ -116,7 +116,7 @@ async def _lease(pool: AsyncConnectionPool, run_id: uuid.UUID) -> tuple[str, int
     rows = await _rows(
         pool,
         "SELECT status, attempt, lease_owner, lease_expires_at <= now() "
-        "FROM graph_agent.runs WHERE run_id = %s",
+        "FROM ranvier.runs WHERE run_id = %s",
         run_id,
     )
     return rows[0]
@@ -186,8 +186,8 @@ async def test_worker_stop_drains_releases_the_lease_and_the_requeued_run_resume
     assert new_token != token and new_token.startswith("drained:")  # the old owner is fenced out
     jobs = await _rows(
         pool,
-        "SELECT status::text, priority FROM graph_agent.procrastinate_jobs "
-        "WHERE task_name = 'graph_agent.execute_run' AND status = 'todo'",
+        "SELECT status::text, priority FROM ranvier.procrastinate_jobs "
+        "WHERE task_name = 'ranvier.execute_run' AND status = 'todo'",
     )
     assert jobs == [("todo", RECOVERY_PRIORITY)]
 

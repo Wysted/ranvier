@@ -22,11 +22,11 @@ The single place a flow runs: a DB-free `stream_graph` core plus `execute_run` t
 - design.md §13 row "Runner"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/runner.py
+- packages/core/src/ranvier/_internal/runtime/runner.py
 - packages/core/tests/unit/runtime/test_runner.py
 - packages/core/tests/integration/runtime/test_runner.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/bootstrap.py (append only: add `flows` (FlowRegistry), `queue: RunQueue | None`; T32 appends the usage observer wiring in the same wave)
+- packages/core/src/ranvier/_internal/bootstrap.py (append only: add `flows` (FlowRegistry), `queue: RunQueue | None`; T32 appends the usage observer wiring in the same wave)
 
 ## Out of scope
 - CLI commands (T17, T18)

@@ -1,7 +1,7 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from graph_agent._internal.runtime.offline import FakeChatModel
+from ranvier._internal.runtime.offline import FakeChatModel
 
 
 def test_scripted_replies_repeat_last_and_record_calls() -> None:

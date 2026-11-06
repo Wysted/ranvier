@@ -19,10 +19,10 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
-from graph_agent._internal.agents.tools import ToolConfigError, ToolRegistry
-from graph_agent._internal.config.manifest import ToolSpec
-from graph_agent._internal.config.settings import LimitsSettings
-from graph_agent._internal.limits import CpuPool
+from ranvier._internal.agents.tools import ToolConfigError, ToolRegistry
+from ranvier._internal.config.manifest import ToolSpec
+from ranvier._internal.config.settings import LimitsSettings
+from ranvier._internal.limits import CpuPool
 
 TIMEOUT_S = 0.1
 HANG_S = 1.0

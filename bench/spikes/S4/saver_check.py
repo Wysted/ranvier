@@ -18,8 +18,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from common import PORT, drop_db, dsn, recreate_db
-from graph_agent._internal.db.pool import open_checkpointer_pool
-from graph_agent._internal.runtime.checkpointer import PooledPostgresSaver
+from ranvier._internal.db.pool import open_checkpointer_pool
+from ranvier._internal.runtime.checkpointer import PooledPostgresSaver
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 

@@ -1,22 +1,22 @@
 # {{ project_name }}
 
-Flows on [graph-agent]({{ graph_agent_repo }}): plain LangGraph `StateGraph`s that the
+Flows on [ranvier]({{ ranvier_repo }}): plain LangGraph `StateGraph`s that the
 platform registers, runs, checkpoints in Postgres and serves over HTTP. This repo holds only what
 your product owns: flows, tools, the manifest and deployment files. The platform is a pinned
-dependency (`graph-agent` at tag `{{ graph_agent_tag }}`).
+dependency (`ranvier` at tag `{{ ranvier_tag }}`).
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `graph-agent.toml` | Manifest: flows, tools, LLM profiles, MCP servers, API auth, limits |
+| `ranvier.toml` | Manifest: flows, tools, LLM profiles, MCP servers, API auth, limits |
 | `src/{{ package_name }}/flows/` | Your flows (`example.py` is a plain `StateGraph` with one agent node) |
-| `tests/` | Flow tests with a fake model (`graph_agent.testing`) |
+| `tests/` | Flow tests with a fake model (`ranvier.testing`) |
 | `.env.example` | Environment variable names and placeholders (copy to `.env`, never commit it) |
 | `docker-compose.yml`, `Dockerfile` | Postgres for development; the full stack for deployment |
 | `scripts/check.sh`, `.github/workflows/ci.yml` | The quality gate |
 
-Import only `graph_agent` and `graph_agent.testing`. Everything under `graph_agent._internal` may
+Import only `ranvier` and `ranvier.testing`. Everything under `ranvier._internal` may
 change in any release; ruff (`banned-api`) and import-linter fail the build if you import it.
 
 ## Run
@@ -27,22 +27,22 @@ cp .env.example .env                   # then edit it
 export UV_ENV_FILE=.env                # see the note below
 ollama pull qwen3:4b                   # the default profile's model
 docker compose up -d db                # Postgres on 127.0.0.1:25432
-uv run graph-agent validate            # compile every flow in the manifest
-uv run graph-agent migrate             # schema, checkpointer tables, job queue
-uv run graph-agent serve               # HTTP API on api.host:api.port
-uv run graph-agent worker              # background runs, crons, recovery (second terminal)
+uv run ranvier validate            # compile every flow in the manifest
+uv run ranvier migrate             # schema, checkpointer tables, job queue
+uv run ranvier serve               # HTTP API on api.host:api.port
+uv run ranvier worker              # background runs, crons, recovery (second terminal)
 ```
 
-`UV_ENV_FILE=.env` makes `uv run` load `.env` into the process environment. graph-agent reads
+`UV_ENV_FILE=.env` makes `uv run` load `.env` into the process environment. ranvier reads
 `.env` only for its own settings; the secrets named by `key_env` / `api_key_env` in
-`graph-agent.toml` must be real environment variables, or `serve` fails with "env var ... is unset".
+`ranvier.toml` must be real environment variables, or `serve` fails with "env var ... is unset".
 
-Other commands: `graph-agent run example --input '{"messages": [...]}' [--memory]` runs a flow
-inline and prints its events (`--memory` needs no database), `graph-agent crons` lists declared
-crons, `graph-agent usage` reports tokens and indicative cost.
+Other commands: `ranvier run example --input '{"messages": [...]}' [--memory]` runs a flow
+inline and prints its events (`--memory` needs no database), `ranvier crons` lists declared
+crons, `ranvier usage` reports tokens and indicative cost.
 
 The default profile uses Ollama (`qwen3:4b`), which needs no API key. To use a hosted provider add
-its extra to `pyproject.toml` (`graph-agent[openai]`) and a profile with `api_key_env`. Bootstrap
+its extra to `pyproject.toml` (`ranvier[openai]`) and a profile with `api_key_env`. Bootstrap
 warms up every profile, so add such a profile only when every flow can run with it.
 
 ## Test
@@ -63,11 +63,11 @@ inside the event loop fails. Keep file and network I/O in nodes async (or run it
 
 `docker compose up -d --build` starts Postgres, a one-shot `migrate`, the `api` and the `worker`
 from one image (CPython 3.14.5+ slim, uv, `--locked`: commit `uv.lock`). To roll out a new
-build (above all after upgrading graph-agent, since Procrastinate's schema changes must not run
+build (above all after upgrading ranvier, since Procrastinate's schema changes must not run
 under old workers): `docker compose stop api worker && docker compose up -d --build`. Behind it:
 
 - **Auth.** The API refuses `api.auth = "none"` on a non-loopback host. Static keys are declared
-  in `graph-agent.toml` by the NAME of the variable that holds them. **A key without `tenant_id`
+  in `ranvier.toml` by the NAME of the variable that holds them. **A key without `tenant_id`
   is an admin key: it sees the runs and threads of every tenant.** Give each tenant its own key
   with `tenant_id`, or plug in `api.auth = "module:callable"` returning a `Principal`.
 - **Request body size.** uvicorn does not limit request bodies. Set a limit at the gateway or
@@ -90,7 +90,7 @@ under old workers): `docker compose stop api worker && docker compose up -d --bu
   `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` (the ollama client reads it when the
   profile has no `base_url`); compose maps `host.docker.internal` on Linux. Ollama must listen
   beyond loopback (`OLLAMA_HOST=0.0.0.0` for the Ollama server).
-- **Secrets.** Only variable NAMES live in `graph-agent.toml`; values come from the environment
+- **Secrets.** Only variable NAMES live in `ranvier.toml`; values come from the environment
   (`.env` locally, your secret store in production). Database URLs must not embed passwords in
   logs or error messages you add.
 
@@ -113,19 +113,19 @@ inside the node or tool that needs them.
 
 This repo was rendered by [Copier](https://copier.readthedocs.io); `.copier-answers.yml` records
 the answers and the template version. The template is versioned together with the platform, so a
-new graph-agent tag moves the pin and the files that go with it:
+new ranvier tag moves the pin and the files that go with it:
 
 ```bash
 git status                                  # Copier needs a clean working tree
-uvx copier update --vcs-ref v0.2.0 --data graph_agent_tag=v0.2.0
-uv lock --upgrade-package graph-agent && scripts/check.sh
+uvx copier update --vcs-ref v0.2.0 --data ranvier_tag=v0.2.0
+uv lock --upgrade-package ranvier && scripts/check.sh
 ```
 
 Before deploying an upgrade, stop the running services so `migrate` runs alone (a new
 Procrastinate version changes the job-queue schema):
 `docker compose stop api worker && docker compose up -d --build`.
 
-Pass both: `--vcs-ref` picks the template version and `graph_agent_tag` is the answer that
+Pass both: `--vcs-ref` picks the template version and `ranvier_tag` is the answer that
 renders the pin in `pyproject.toml`; they must name the same tag. Without `--vcs-ref` Copier
 uses the latest tag.
 

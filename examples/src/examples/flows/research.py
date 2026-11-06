@@ -1,6 +1,6 @@
 from langgraph.graph import START, MessagesState, StateGraph
 
-from graph_agent import AgentSpec, FlowContext, as_tool
+from ranvier import AgentSpec, FlowContext, as_tool
 
 LEAD_PROMPT = (
     "You answer questions about the product. Search the docs with the MCP tools and delegate "

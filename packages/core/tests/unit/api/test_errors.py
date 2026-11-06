@@ -6,10 +6,10 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from graph_agent._internal.api.app import register_error_handlers
-from graph_agent._internal.api.auth import AuthError
-from graph_agent._internal.api.dto import RETRY_AFTER_S
-from graph_agent._internal.runtime.runs import ErrorCode, RunError
+from ranvier._internal.api.app import register_error_handlers
+from ranvier._internal.api.auth import AuthError
+from ranvier._internal.api.dto import RETRY_AFTER_S
+from ranvier._internal.runtime.runs import ErrorCode, RunError
 
 
 class Body(BaseModel):

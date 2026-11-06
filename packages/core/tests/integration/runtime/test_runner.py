@@ -11,15 +11,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from psycopg_pool import AsyncConnectionPool
 
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import RunsSettings, Settings
-from graph_agent._internal.db.migrate import apply_migrations
-from graph_agent._internal.db.pool import open_app_pool
-from graph_agent._internal.runtime.events import EndEvent, ErrorEvent, RunEvent
-from graph_agent._internal.runtime.flows import FlowRegistry
-from graph_agent._internal.runtime.runner import execute_run, pending_interrupts
-from graph_agent._internal.runtime.runs import ErrorCode, RunError, RunsRepository, RunStatus
 from integration._resources import Resources
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import RunsSettings, Settings
+from ranvier._internal.db.migrate import apply_migrations
+from ranvier._internal.db.pool import open_app_pool
+from ranvier._internal.runtime.events import EndEvent, ErrorEvent, RunEvent
+from ranvier._internal.runtime.flows import FlowRegistry
+from ranvier._internal.runtime.runner import execute_run, pending_interrupts
+from ranvier._internal.runtime.runs import ErrorCode, RunError, RunsRepository, RunStatus
 
 MODULE = "t16_integration_flows"
 FLOW_VERSION = 1
@@ -94,7 +94,7 @@ async def _new(res: Resources, flow: str, thread: uuid.UUID | None = None) -> uu
 
 async def _status(pool: AsyncConnectionPool, run_id: uuid.UUID) -> str | None:
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT status FROM graph_agent.runs WHERE run_id = %s", (run_id,))
+        cur = await conn.execute("SELECT status FROM ranvier.runs WHERE run_id = %s", (run_id,))
         row = await cur.fetchone()
         return None if row is None else str(row[0])
 
@@ -139,7 +139,7 @@ async def test_lost_lease_writes_no_terminal_state(
     # Another executor takes over: expire the lease and claim it.
     async with pool.connection() as conn:
         await conn.execute(
-            "UPDATE graph_agent.runs SET lease_expires_at = now() - interval '1 second' "
+            "UPDATE ranvier.runs SET lease_expires_at = now() - interval '1 second' "
             "WHERE run_id = %s",
             (run_id,),
         )

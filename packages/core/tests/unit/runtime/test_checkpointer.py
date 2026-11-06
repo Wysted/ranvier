@@ -12,8 +12,8 @@ from langgraph.runtime import RunControl
 from psycopg_pool import AsyncConnectionPool
 
 from drain_graph import build_drain_graph
-from graph_agent._internal.db.pool import CheckpointerPool
-from graph_agent._internal.runtime.checkpointer import (
+from ranvier._internal.db.pool import CheckpointerPool
+from ranvier._internal.runtime.checkpointer import (
     create_checkpointer,
     create_memory_checkpointer,
 )

@@ -6,8 +6,8 @@ from typing import Any
 import httpx2
 import pytest
 
-from graph_agent._internal.config.manifest import LlmSettings
-from graph_agent._internal.llm import LlmError, LlmRegistry
+from ranvier._internal.config.manifest import LlmSettings
+from ranvier._internal.llm import LlmError, LlmRegistry
 
 MAX_CONN = 3
 KEYED = {"api_key_env": "FAKE_KEY"}
@@ -100,8 +100,8 @@ def test_missing_env_names_variable_only(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_missing_extra_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     reg = _registry(monkeypatch)
-    monkeypatch.setattr("graph_agent._internal.llm.find_spec", lambda _name: None)
-    with pytest.raises(LlmError, match=r"graph-agent\[ollama\]"):
+    monkeypatch.setattr("ranvier._internal.llm.find_spec", lambda _name: None)
+    with pytest.raises(LlmError, match=r"ranvier\[ollama\]"):
         reg.model("ol")
 
 
@@ -140,8 +140,8 @@ def test_model_is_cached_per_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("must not rebuild a cached model")
 
-    monkeypatch.setattr("graph_agent._internal.llm.find_spec", boom)
-    monkeypatch.setattr("graph_agent._internal.llm.init_chat_model", boom)
+    monkeypatch.setattr("ranvier._internal.llm.find_spec", boom)
+    monkeypatch.setattr("ranvier._internal.llm.init_chat_model", boom)
     assert reg.model("oa") is first
     asyncio.run(reg.aclose())
 

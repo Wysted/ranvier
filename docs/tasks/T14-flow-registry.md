@@ -21,7 +21,7 @@ Resolve flow names to compiled graphs lazily, cache them per process, and reject
 - design.md §2 layout row `runtime/flows.py`
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/flows.py
+- packages/core/src/ranvier/_internal/runtime/flows.py
 - packages/core/tests/unit/runtime/test_flows.py
 Shared files: none.
 

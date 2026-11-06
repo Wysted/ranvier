@@ -23,7 +23,7 @@ A `research` example flow that uses a subagent (as a tool) and MCP tools, with a
 ## Scope: files this task may create or edit
 - examples/src/examples/flows/research.py
 - examples/tests/test_research.py
-- examples/graph-agent.toml (append the `research` flow, a profile and an `[mcp.servers.docs]` entry)
+- examples/ranvier.toml (append the `research` flow, a profile and an `[mcp.servers.docs]` entry)
 Shared files: none.
 
 ## Out of scope
@@ -32,8 +32,8 @@ Shared files: none.
 
 ## Acceptance criteria
 - [ ] `research(ctx)` factory: builds a subagent with `ctx.agent(AgentSpec(...))`, hands it to a parent agent via `as_tool`, parent also has MCP tools
-- [ ] Test uses `graph_agent.testing` (`FakeChatModel` scripts for parent and subagent, `mcp=` fake source or an in-process FastMCP server) and asserts on the final state and the tool calls
-- [ ] `graph-agent validate --offline` passes on the example manifest
+- [ ] Test uses `ranvier.testing` (`FakeChatModel` scripts for parent and subagent, `mcp=` fake source or an in-process FastMCP server) and asserts on the final state and the tool calls
+- [ ] `ranvier validate --offline` passes on the example manifest
 - [ ] Only the public facade is imported (C2)
 - [ ] `scripts/check.sh` green
 - [ ] import-linter contracts hold

@@ -11,8 +11,8 @@ from mcp_types import (
     TextResourceContents,
 )
 
-from graph_agent._internal.agents.mcp import _map_result, _Server
-from graph_agent._internal.config.manifest import McpServerSpec
+from ranvier._internal.agents.mcp import _map_result, _Server
+from ranvier._internal.config.manifest import McpServerSpec
 
 PNG_B64 = "iVBORw0KGgo="
 

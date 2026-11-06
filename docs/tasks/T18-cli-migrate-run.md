@@ -12,7 +12,7 @@ status: done
 ---
 
 ## Goal
-`graph-agent migrate` (own SQL + checkpointer setup) and `graph-agent run <flow> --input JSON [--thread ID] [--resume JSON] [--memory]`.
+`ranvier migrate` (own SQL + checkpointer setup) and `ranvier run <flow> --input JSON [--thread ID] [--resume JSON] [--memory]`.
 
 ## Design references
 - design.md §6 "CLI" table rows `run` and `migrate`
@@ -23,7 +23,7 @@ status: done
 - packages/core/tests/unit/test_cli_run.py
 - packages/core/tests/integration/test_cli_migrate.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/cli.py (append `_add_migrate`, `_add_run` and handlers; T23 appends `serve` in the same wave)
+- packages/core/src/ranvier/_internal/cli.py (append `_add_migrate`, `_add_run` and handlers; T23 appends `serve` in the same wave)
 
 ## Out of scope
 - Procrastinate schema step in `migrate` (T25 appends it once `queue.py` exists)

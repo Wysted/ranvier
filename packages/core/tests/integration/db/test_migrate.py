@@ -6,14 +6,14 @@ import psycopg
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
-from graph_agent._internal.db.migrate import (
+from ranvier._internal.db.migrate import (
     MIGRATION_LOCK_POLL_S,
     MigrationError,
     advisory_lock,
     apply_migrations,
     discover_migrations,
 )
-from graph_agent._internal.db.pool import open_app_pool
+from ranvier._internal.db.pool import open_app_pool
 
 CONCURRENT_RUNNERS = 4
 
@@ -33,7 +33,7 @@ async def _discover() -> list[int]:
 
 async def _versions(pool: AsyncConnectionPool) -> list[int]:
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT version FROM graph_agent.schema_version ORDER BY 1")
+        cur = await conn.execute("SELECT version FROM ranvier.schema_version ORDER BY 1")
         return [row[0] for row in await cur.fetchall()]
 
 
@@ -54,7 +54,7 @@ async def test_applied_version_without_file_fails(pool: AsyncConnectionPool) -> 
     await apply_migrations(pool)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO graph_agent.schema_version (version, name) VALUES (9999, 'ghost.sql')"
+            "INSERT INTO ranvier.schema_version (version, name) VALUES (9999, 'ghost.sql')"
         )
     with pytest.raises(MigrationError, match="9999"):
         await apply_migrations(pool)
@@ -64,7 +64,7 @@ async def _insert_run(
     conn: psycopg.AsyncConnection[tuple[object, ...]], thread_id: uuid.UUID, status: str
 ) -> None:
     await conn.execute(
-        "INSERT INTO graph_agent.runs "
+        "INSERT INTO ranvier.runs "
         "(run_id, thread_id, flow, flow_version, status, input, lease_owner, lease_expires_at) "
         "VALUES (%s, %s, 'f', 1, %s, '{}', 'w', now() + interval '1 minute')",
         (uuid.uuid4(), thread_id, status),
@@ -86,7 +86,7 @@ async def test_input_xor_command(pool: AsyncConnectionPool) -> None:
     async with pool.connection() as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
             await conn.execute(
-                "INSERT INTO graph_agent.runs (run_id, thread_id, flow, flow_version, status) "
+                "INSERT INTO ranvier.runs (run_id, thread_id, flow, flow_version, status) "
                 "VALUES (%s, %s, 'f', 1, 'pending')",
                 (uuid.uuid4(), uuid.uuid4()),
             )
@@ -97,7 +97,7 @@ async def test_json_null_counts_as_absent(pool: AsyncConnectionPool) -> None:
     async with pool.connection() as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
             await conn.execute(
-                "INSERT INTO graph_agent.runs (run_id, thread_id, flow, flow_version, status, "
+                "INSERT INTO ranvier.runs (run_id, thread_id, flow, flow_version, status, "
                 "input) VALUES (%s, %s, 'f', 1, 'pending', 'null'::jsonb)",
                 (uuid.uuid4(), uuid.uuid4()),
             )
@@ -108,7 +108,7 @@ async def test_running_requires_lease(pool: AsyncConnectionPool) -> None:
     async with pool.connection() as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
             await conn.execute(
-                "INSERT INTO graph_agent.runs (run_id, thread_id, flow, flow_version, status, "
+                "INSERT INTO ranvier.runs (run_id, thread_id, flow, flow_version, status, "
                 "input) VALUES (%s, %s, 'f', 1, 'running', '{}')",
                 (uuid.uuid4(), uuid.uuid4()),
             )
@@ -127,7 +127,7 @@ async def test_connection_state_restored(clean_database: str) -> None:
 async def test_waiting_for_the_lock_is_logged_once_with_the_holder(
     pool: AsyncConnectionPool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level("WARNING", logger="graph_agent._internal.db.migrate")
+    caplog.set_level("WARNING", logger="ranvier._internal.db.migrate")
     async with advisory_lock(pool) as holder:
         task = asyncio.create_task(apply_migrations(pool))
         await asyncio.sleep(MIGRATION_LOCK_POLL_S * 4)  # several polls, one log line

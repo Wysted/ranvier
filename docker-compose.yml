@@ -7,9 +7,9 @@ services:
     image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
-      POSTGRES_USER: graph_agent
-      POSTGRES_PASSWORD: graph_agent
-      POSTGRES_DB: graph_agent
+      POSTGRES_USER: ranvier
+      POSTGRES_PASSWORD: ranvier
+      POSTGRES_DB: ranvier
     ports:
       # Non-default host port below 49152: no clash with a local 5432 nor with the port ranges Windows/Hyper-V reserves dynamically (WSL).
       - "127.0.0.1:25432:5432"
@@ -17,7 +17,7 @@ services:
       # Postgres 18 images keep PGDATA in a versioned subdirectory of this path.
       - pgdata:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ranvier -d ranvier"]
       interval: 5s
       timeout: 3s
       retries: 10

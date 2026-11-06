@@ -5,9 +5,9 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from graph_agent._internal import bootstrap
-from graph_agent._internal.bootstrap import ShutdownBudget
-from graph_agent._internal.config.manifest import (
+from ranvier._internal import bootstrap
+from ranvier._internal.bootstrap import ShutdownBudget
+from ranvier._internal.config.manifest import (
     FlowSpec,
     LlmProfile,
     LlmSettings,
@@ -15,9 +15,9 @@ from graph_agent._internal.config.manifest import (
     McpSettings,
     ToolSpec,
 )
-from graph_agent._internal.config.settings import LimitsSettings, Settings
-from graph_agent._internal.limits import HANDOVER_MARGIN_S, ShuttingDown
-from graph_agent._internal.observability.tracing import LoggingMetrics, Observability
+from ranvier._internal.config.settings import LimitsSettings, Settings
+from ranvier._internal.limits import HANDOVER_MARGIN_S, ShuttingDown
+from ranvier._internal.observability.tracing import LoggingMetrics, Observability
 
 LAG_TASK = "loop-lag-sampler"
 

@@ -21,11 +21,11 @@ status: done
 - design.md §8 rows "Tool", "Sync tools", "CPU-heavy tools", "Error isolation"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/spec.py
-- packages/core/src/graph_agent/_internal/agents/tools.py
+- packages/core/src/ranvier/_internal/agents/spec.py
+- packages/core/src/ranvier/_internal/agents/tools.py
 - packages/core/tests/unit/agents/test_tools.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/__init__.py (append `AgentSpec`; T12 appends `RunContext`/`FlowContext` in the same wave)
+- packages/core/src/ranvier/__init__.py (append `AgentSpec`; T12 appends `RunContext`/`FlowContext` in the same wave)
 
 ## Out of scope
 - Skills (T28), MCP (T29), agent factory and `as_tool` (T30)

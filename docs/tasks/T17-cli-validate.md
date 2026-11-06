@@ -12,20 +12,20 @@ status: done
 ---
 
 ## Goal
-`graph-agent validate [--diagram] [--offline]` that checks the whole manifest and names the failing key.
+`ranvier validate [--diagram] [--offline]` that checks the whole manifest and names the failing key.
 
 ## Design references
-- design.md §4 "Validation: `graph-agent validate [--diagram] [--offline]`"
+- design.md §4 "Validation: `ranvier validate [--diagram] [--offline]`"
 - design.md §6 "CLI" table row `validate`
 - design.md §4 names/versions/crons rules
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/offline.py (new, small: scripted `FakeChatModel` with `calls` and a no-op `bind_tools`; T19 re-exports it as the public one)
+- packages/core/src/ranvier/_internal/runtime/offline.py (new, small: scripted `FakeChatModel` with `calls` and a no-op `bind_tools`; T19 re-exports it as the public one)
 - packages/core/tests/unit/runtime/test_offline.py
 - packages/core/tests/unit/test_cli_validate.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/cli.py (append `_add_validate` + its handler, nothing else; T32 appends `usage` in the same wave)
-- packages/core/src/graph_agent/_internal/runtime/flows.py (T14's file, earlier wave: append `validate_manifest(settings, *, offline) -> list[Problem]`)
+- packages/core/src/ranvier/_internal/cli.py (append `_add_validate` + its handler, nothing else; T32 appends `usage` in the same wave)
+- packages/core/src/ranvier/_internal/runtime/flows.py (T14's file, earlier wave: append `validate_manifest(settings, *, offline) -> list[Problem]`)
 
 ## Out of scope
 - `run`, `migrate` (T18)

@@ -21,7 +21,7 @@ Build `AsyncPostgresSaver` over the checkpointer pool (or `InMemorySaver`), with
 - design.md §14 open check "`AsyncPostgresSaver` serializes writes per instance"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/runtime/checkpointer.py
+- packages/core/src/ranvier/_internal/runtime/checkpointer.py
 - packages/core/tests/unit/runtime/test_checkpointer.py
 - packages/core/tests/integration/runtime/test_checkpointer.py
 Shared files: none.

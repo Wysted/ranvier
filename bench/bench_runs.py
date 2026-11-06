@@ -38,18 +38,18 @@ from langgraph.graph import END, START, StateGraph
 from psycopg import sql
 from pydantic import SecretStr
 
-from graph_agent._internal.bootstrap import Container, open_container
-from graph_agent._internal.cli import _migrate_database
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import (
+from ranvier._internal.bootstrap import Container, open_container
+from ranvier._internal.cli import _migrate_database
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import (
     DEFAULT_DATABASE_URL,
     DatabaseSettings,
     LimitsSettings,
     Settings,
 )
-from graph_agent._internal.runtime.context import FlowContext
-from graph_agent._internal.runtime.events import EndEvent, ErrorEvent
-from graph_agent._internal.runtime.runner import execute_run
+from ranvier._internal.runtime.context import FlowContext
+from ranvier._internal.runtime.events import EndEvent, ErrorEvent
+from ranvier._internal.runtime.runner import execute_run
 
 FLOW = "bench"
 # The manifest imports the target by module name: this file is on sys.path as the script dir.
@@ -171,7 +171,7 @@ def admin_exec(admin_url: str, statement: sql.Composed) -> None:
 
 
 async def bench(args: argparse.Namespace) -> dict[str, Any]:
-    name = f"graph_agent_bench_{uuid.uuid4().hex[:12]}"
+    name = f"ranvier_bench_{uuid.uuid4().hex[:12]}"
     await asyncio.to_thread(
         admin_exec, args.admin_url, sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name))
     )

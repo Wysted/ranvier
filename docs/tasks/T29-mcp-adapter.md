@@ -21,7 +21,7 @@ The `McpToolSource` port and an adapter that turns MCP server tools into LangCha
 - design.md §14 open check on MCP and `.claude/agents/_shared/decisions.md` (last MCP line)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/agents/mcp.py
+- packages/core/src/ranvier/_internal/agents/mcp.py
 - packages/core/tests/unit/agents/test_mcp.py (result mapping, schema conversion)
 - packages/core/tests/integration/agents/test_mcp_server.py (in-process FastMCP over Streamable HTTP, no external network)
 Shared files: none.

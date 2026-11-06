@@ -20,7 +20,7 @@ Pydantic request/response DTOs, the single error body, the error-code to HTTP st
 - design.md §6 "HTTP API" intro (`{code, message, retryable}`, `http.HTTPStatus`)
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/api/dto.py
+- packages/core/src/ranvier/_internal/api/dto.py
 - packages/core/tests/unit/api/test_dto.py
 Shared files: none.
 

@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import BaseTool, tool
 
 from examples.flows.research import SUMMARIZER_PROMPT, research
-from graph_agent.testing import FakeChatModel, flow_context, run_flow
+from ranvier.testing import FakeChatModel, flow_context, run_flow
 
 
 @tool

@@ -7,17 +7,17 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from graph_agent._internal.config.manifest import (
+from ranvier._internal.config.manifest import (
     TargetImportError,
     import_target,
     next_fire,
 )
-from graph_agent._internal.config.settings import Settings
+from ranvier._internal.config.settings import Settings
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    for var in [v for v in os.environ if v.startswith("GRAPH_AGENT_")]:
+    for var in [v for v in os.environ if v.startswith("RANVIER_")]:
         monkeypatch.delenv(var)
     monkeypatch.chdir(tmp_path)
 
@@ -58,7 +58,7 @@ model = "gpt-5.4-mini"
 api_key_env = "OPENAI_API_KEY"
 """
     )
-    monkeypatch.setenv("GRAPH_AGENT_CONFIG", str(path))
+    monkeypatch.setenv("RANVIER_CONFIG", str(path))
     s = make()
     assert s.flows["summarize"].crons[0].input == {"source": "daily"}
     assert s.flows["summarize"].timeout_s == 600
@@ -142,7 +142,7 @@ def test_next_fire_is_utc_and_strictly_after() -> None:
         {"provider": "ollama", "model": "m", "max_retries": 1},
         {"provider": "ollama", "model": "m", "api_key_env": "not a name"},
         {"provider": "ollama", "model": "m", "api_key_env": "OLLAMA_KEY"},
-        {"provider": "openai", "model": "m", "api_key_env": "GRAPH_AGENT_DATABASE__URL"},
+        {"provider": "openai", "model": "m", "api_key_env": "RANVIER_DATABASE__URL"},
         {"provider": "other", "model": "m"},
         {"provider": "ollama", "model": ""},
     ],
@@ -172,7 +172,7 @@ def test_mcp_rules() -> None:
 
 def test_mcp_header_env_cannot_name_own_secrets() -> None:
     with pytest.raises(ValidationError, match=r"headers_env"):
-        make(mcp={"servers": {"s": {"url": "https://x.io", "headers_env": {"A": "GRAPH_AGENT_X"}}}})
+        make(mcp={"servers": {"s": {"url": "https://x.io", "headers_env": {"A": "RANVIER_X"}}}})
 
 
 @pytest.mark.parametrize("url", ["https://u:hunter2@x.io/mcp", "https://hunter2@x.io/mcp"])

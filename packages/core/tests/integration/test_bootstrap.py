@@ -3,9 +3,9 @@ import asyncio
 import pytest
 from pydantic import SecretStr
 
-from graph_agent._internal.bootstrap import open_container
-from graph_agent._internal.config.settings import DatabaseSettings, LimitsSettings, Settings
-from graph_agent._internal.runtime.checkpointer import PooledPostgresSaver
+from ranvier._internal.bootstrap import open_container
+from ranvier._internal.config.settings import DatabaseSettings, LimitsSettings, Settings
+from ranvier._internal.runtime.checkpointer import PooledPostgresSaver
 
 
 @pytest.fixture

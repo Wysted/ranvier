@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Packaging checks (design.md section 11, row Packaging).
 #   members  every uv workspace member installs alone (no dev group) in a fresh venv and imports
-#   git      `graph-agent @ git+...#subdirectory=packages/core` installs from the current commit
+#   git      `ranvier @ git+...#subdirectory=packages/core` installs from the current commit
 #   all      both (default)
 set -euo pipefail
 
@@ -68,8 +68,8 @@ check_git_subdirectory() {
         # The throwaway product has no uv.lock: it must resolve (UV_FROZEN is for this repo's lock).
         unset UV_FROZEN
         uv init --bare --quiet
-        uv add --quiet "graph-agent @ git+file://$ROOT@$sha#subdirectory=packages/core"
-        uv run python -I -c "import graph_agent; print('imported', graph_agent.__name__)"
+        uv add --quiet "ranvier @ git+file://$ROOT@$sha#subdirectory=packages/core"
+        uv run python -I -c "import ranvier; print('imported', ranvier.__name__)"
     )
 }
 

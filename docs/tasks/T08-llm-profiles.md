@@ -21,7 +21,7 @@ Build chat models from profiles with `init_chat_model`, sharing one `httpx.Async
 - design.md §14 open check "Each provider integration accepts a shared `http_async_client`"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/llm.py
+- packages/core/src/ranvier/_internal/llm.py
 - packages/core/tests/unit/test_llm.py
 Shared files: none.
 

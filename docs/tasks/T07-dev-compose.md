@@ -31,7 +31,7 @@ Shared files: none.
 
 ## Acceptance criteria
 - [ ] `docker compose up -d` starts Postgres with a healthcheck, a named volume and a non-default host port (avoid clashing with a local 5432); dev credentials live only in the compose file
-- [ ] `conftest.py`: session fixture `database_url` (env `GRAPH_AGENT_TEST_DATABASE_URL`, default pointing at the compose service) that creates a throwaway database per session and drops it at the end; a function-scoped fixture that gives a clean schema; every test under `tests/integration/` is auto-marked `integration` through `pytest_collection_modifyitems`
+- [ ] `conftest.py`: session fixture `database_url` (env `RANVIER_TEST_DATABASE_URL`, default pointing at the compose service) that creates a throwaway database per session and drops it at the end; a function-scoped fixture that gives a clean schema; every test under `tests/integration/` is auto-marked `integration` through `pytest_collection_modifyitems`
 - [ ] If the database is unreachable the fixture fails with a message telling to run `docker compose up -d` (no silent skip)
 - [ ] `docker compose config` validates
 - [ ] `scripts/check.sh` green

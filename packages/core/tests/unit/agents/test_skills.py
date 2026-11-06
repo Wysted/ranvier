@@ -9,8 +9,8 @@ from langchain.agents.middleware import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from graph_agent._internal.agents.skills import SkillError, SkillsMiddleware, load_skills
-from graph_agent.testing import FakeChatModel
+from ranvier._internal.agents.skills import SkillError, SkillsMiddleware, load_skills
+from ranvier.testing import FakeChatModel
 
 FIXTURES = Path(__file__).parent / "skills_fixtures"
 

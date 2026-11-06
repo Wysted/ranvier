@@ -15,9 +15,9 @@ from mcp import Client, MCPError
 from mcp.server.mcpserver import MCPServer
 from mcp_types import INVALID_REQUEST, CallToolResult
 
-from graph_agent._internal.agents import mcp as mcp_module
-from graph_agent._internal.agents.mcp import McpSourceError, open_mcp_sources
-from graph_agent._internal.config.manifest import McpServerSpec
+from ranvier._internal.agents import mcp as mcp_module
+from ranvier._internal.agents.mcp import McpSourceError, open_mcp_sources
+from ranvier._internal.config.manifest import McpServerSpec
 
 # Explicit port: DNS-rebinding protection rejects a Host header without one (S2).
 ASGI_URL = "http://127.0.0.1:8000/mcp"

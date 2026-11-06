@@ -17,11 +17,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import SecretStr
 
-from graph_agent._internal.api import routes
-from graph_agent._internal.api.app import create_app
-from graph_agent._internal.bootstrap import Container
-from graph_agent._internal.config.manifest import FlowSpec
-from graph_agent._internal.config.settings import (
+from ranvier._internal.api import routes
+from ranvier._internal.api.app import create_app
+from ranvier._internal.bootstrap import Container
+from ranvier._internal.config.manifest import FlowSpec
+from ranvier._internal.config.settings import (
     ApiKeyRef,
     ApiSettings,
     DatabaseSettings,
@@ -29,11 +29,11 @@ from graph_agent._internal.config.settings import (
     RunsSettings,
     Settings,
 )
-from graph_agent._internal.db.migrate import apply_migrations
-from graph_agent._internal.db.pool import open_app_pool, open_checkpointer_pool
-from graph_agent._internal.runtime.checkpointer import setup_checkpointer
-from graph_agent._internal.runtime.runner import execute_run
-from graph_agent._internal.runtime.runs import DEFAULT_LIST_LIMIT
+from ranvier._internal.db.migrate import apply_migrations
+from ranvier._internal.db.pool import open_app_pool, open_checkpointer_pool
+from ranvier._internal.runtime.checkpointer import setup_checkpointer
+from ranvier._internal.runtime.runner import execute_run
+from ranvier._internal.runtime.runs import DEFAULT_LIST_LIMIT
 
 MODULE = "t23_integration_flows"
 WAIT_S = 5.0
@@ -324,7 +324,7 @@ async def test_client_disconnect_cancels_an_inline_run(app: FastAPI, container: 
         await container.active_runs.settled()
     assert container.app_pool is not None
     async with container.app_pool.connection() as conn:
-        rows = await (await conn.execute("SELECT status FROM graph_agent.runs")).fetchall()
+        rows = await (await conn.execute("SELECT status FROM ranvier.runs")).fetchall()
     assert rows == [("cancelled",)]
     assert container.limits.active_runs == 0  # the admission slot came back
 
@@ -332,7 +332,7 @@ async def test_client_disconnect_cancels_an_inline_run(app: FastAPI, container: 
 async def _statuses(container: Container) -> list[str]:
     assert container.app_pool is not None
     async with container.app_pool.connection() as conn:
-        rows = await (await conn.execute("SELECT status FROM graph_agent.runs")).fetchall()
+        rows = await (await conn.execute("SELECT status FROM ranvier.runs")).fetchall()
     return [status for (status,) in rows]
 
 

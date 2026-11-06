@@ -1,5 +1,5 @@
 [project]
-name = "graph-agent"
+name = "ranvier"
 version = "0.1.0"
 description = "Platform package and starter for general AI flows on LangGraph"
 requires-python = ">=3.13"
@@ -32,14 +32,14 @@ otel = [
 ]
 
 [project.scripts]
-graph-agent = "graph_agent._internal.cli:main"
+ranvier = "ranvier._internal.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/graph_agent"]
+packages = ["src/ranvier"]
 
 [tool.ruff]
 line-length = 100
@@ -50,9 +50,9 @@ src = ["src", "tests", "../../examples/src"]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "TID", "RUF"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"mcp".msg = "MCP SDK is confined to graph_agent/_internal/agents/mcp.py (design section 2)."
-"mcp_types".msg = "MCP wire types are confined to graph_agent/_internal/agents/mcp.py (design section 2)."
-"httpx2".msg = "httpx2 is confined to graph_agent/_internal/agents/mcp.py and llm.py (design section 2)."
+"mcp".msg = "MCP SDK is confined to ranvier/_internal/agents/mcp.py (design section 2)."
+"mcp_types".msg = "MCP wire types are confined to ranvier/_internal/agents/mcp.py (design section 2)."
+"httpx2".msg = "httpx2 is confined to ranvier/_internal/agents/mcp.py and llm.py (design section 2)."
 "langchain.mcp".msg = "Use the McpToolSource port; langchain.mcp is banned."
 "fastmcp".msg = "fastmcp is banned (design section 2)."
 "langchain_mcp_adapters".msg = "Archived package; use the McpToolSource port."
@@ -88,13 +88,13 @@ filterwarnings = ["error", "ignore::DeprecationWarning:langsmith.*"]
 markers = ["integration: needs Postgres (docker compose); run with -m integration"]
 
 [tool.importlinter]
-root_packages = ["graph_agent", "examples"]
+root_packages = ["ranvier", "examples"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "C1 layers"
 type = "layers"
-containers = ["graph_agent._internal"]
+containers = ["ranvier._internal"]
 # Parenthesized layers do not exist yet. cli sits above api and worker: it starts the worker (T25).
 layers = [
     "cli",
@@ -109,133 +109,133 @@ layers = [
 [[tool.importlinter.contracts]]
 name = "C2 internals never import the testing facade"
 type = "layers"
-containers = ["graph_agent"]
+containers = ["ranvier"]
 # testing may import _internal, never the reverse. `testing` does not exist yet.
 layers = ["(testing)", "_internal"]
 
 [[tool.importlinter.contracts]]
 name = "C3a fastapi and starlette only in api"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["fastapi", "starlette"]
 ignore_imports = [
-    "graph_agent._internal.api -> fastapi",
-    "graph_agent._internal.api.** -> fastapi",
-    "graph_agent._internal.api -> starlette",
-    "graph_agent._internal.api.** -> starlette",
+    "ranvier._internal.api -> fastapi",
+    "ranvier._internal.api.** -> fastapi",
+    "ranvier._internal.api -> starlette",
+    "ranvier._internal.api.** -> starlette",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C3b uvicorn only in api and cli"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["uvicorn"]
 ignore_imports = [
-    "graph_agent._internal.api -> uvicorn",
-    "graph_agent._internal.api.** -> uvicorn",
-    "graph_agent._internal.cli -> uvicorn",
+    "ranvier._internal.api -> uvicorn",
+    "ranvier._internal.api.** -> uvicorn",
+    "ranvier._internal.cli -> uvicorn",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C4 procrastinate only in queue and worker"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["procrastinate"]
 ignore_imports = [
-    "graph_agent._internal.queue -> procrastinate",
-    "graph_agent._internal.queue.** -> procrastinate",
-    "graph_agent._internal.worker -> procrastinate",
-    "graph_agent._internal.worker.** -> procrastinate",
+    "ranvier._internal.queue -> procrastinate",
+    "ranvier._internal.queue.** -> procrastinate",
+    "ranvier._internal.worker -> procrastinate",
+    "ranvier._internal.worker.** -> procrastinate",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C5a langgraph only in runtime, agents, facade and testing"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["langgraph"]
 ignore_imports = [
-    "graph_agent -> langgraph",
-    "graph_agent._internal.runtime -> langgraph",
-    "graph_agent._internal.runtime.** -> langgraph",
-    "graph_agent._internal.agents -> langgraph",
-    "graph_agent._internal.agents.** -> langgraph",
-    "graph_agent.testing -> langgraph",
-    "graph_agent.testing.** -> langgraph",
+    "ranvier -> langgraph",
+    "ranvier._internal.runtime -> langgraph",
+    "ranvier._internal.runtime.** -> langgraph",
+    "ranvier._internal.agents -> langgraph",
+    "ranvier._internal.agents.** -> langgraph",
+    "ranvier.testing -> langgraph",
+    "ranvier.testing.** -> langgraph",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C5b langchain only in runtime, agents, llm, usage, facade and testing"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["langchain", "langchain_core"]
 ignore_imports = [
-    "graph_agent -> langchain",
-    "graph_agent -> langchain_core",
-    "graph_agent._internal.runtime -> langchain",
-    "graph_agent._internal.runtime -> langchain_core",
-    "graph_agent._internal.runtime.** -> langchain",
-    "graph_agent._internal.runtime.** -> langchain_core",
-    "graph_agent._internal.agents -> langchain",
-    "graph_agent._internal.agents -> langchain_core",
-    "graph_agent._internal.agents.** -> langchain",
-    "graph_agent._internal.agents.** -> langchain_core",
-    "graph_agent._internal.llm -> langchain",
-    "graph_agent._internal.llm -> langchain_core",
-    "graph_agent._internal.llm.** -> langchain",
-    "graph_agent._internal.llm.** -> langchain_core",
-    "graph_agent._internal.usage -> langchain",
-    "graph_agent._internal.usage -> langchain_core",
-    "graph_agent._internal.usage.** -> langchain",
-    "graph_agent._internal.usage.** -> langchain_core",
-    "graph_agent.testing -> langchain",
-    "graph_agent.testing -> langchain_core",
-    "graph_agent.testing.** -> langchain",
-    "graph_agent.testing.** -> langchain_core",
+    "ranvier -> langchain",
+    "ranvier -> langchain_core",
+    "ranvier._internal.runtime -> langchain",
+    "ranvier._internal.runtime -> langchain_core",
+    "ranvier._internal.runtime.** -> langchain",
+    "ranvier._internal.runtime.** -> langchain_core",
+    "ranvier._internal.agents -> langchain",
+    "ranvier._internal.agents -> langchain_core",
+    "ranvier._internal.agents.** -> langchain",
+    "ranvier._internal.agents.** -> langchain_core",
+    "ranvier._internal.llm -> langchain",
+    "ranvier._internal.llm -> langchain_core",
+    "ranvier._internal.llm.** -> langchain",
+    "ranvier._internal.llm.** -> langchain_core",
+    "ranvier._internal.usage -> langchain",
+    "ranvier._internal.usage -> langchain_core",
+    "ranvier._internal.usage.** -> langchain",
+    "ranvier._internal.usage.** -> langchain_core",
+    "ranvier.testing -> langchain",
+    "ranvier.testing -> langchain_core",
+    "ranvier.testing.** -> langchain",
+    "ranvier.testing.** -> langchain_core",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C5c provider integrations only in llm"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["langchain_openai", "langchain_anthropic", "langchain_ollama"]
 ignore_imports = [
-    "graph_agent._internal.llm -> langchain_openai",
-    "graph_agent._internal.llm -> langchain_anthropic",
-    "graph_agent._internal.llm -> langchain_ollama",
-    "graph_agent._internal.llm.** -> langchain_openai",
-    "graph_agent._internal.llm.** -> langchain_anthropic",
-    "graph_agent._internal.llm.** -> langchain_ollama",
+    "ranvier._internal.llm -> langchain_openai",
+    "ranvier._internal.llm -> langchain_anthropic",
+    "ranvier._internal.llm -> langchain_ollama",
+    "ranvier._internal.llm.** -> langchain_openai",
+    "ranvier._internal.llm.** -> langchain_anthropic",
+    "ranvier._internal.llm.** -> langchain_ollama",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C6a opentelemetry and openinference only in observability.otlp"
 type = "forbidden"
-source_modules = ["graph_agent"]
+source_modules = ["ranvier"]
 forbidden_modules = ["opentelemetry", "openinference"]
 ignore_imports = [
-    "graph_agent._internal.observability.otlp -> opentelemetry",
-    "graph_agent._internal.observability.otlp -> openinference",
-    "graph_agent._internal.observability.otlp.** -> opentelemetry",
-    "graph_agent._internal.observability.otlp.** -> openinference",
+    "ranvier._internal.observability.otlp -> opentelemetry",
+    "ranvier._internal.observability.otlp -> openinference",
+    "ranvier._internal.observability.otlp.** -> opentelemetry",
+    "ranvier._internal.observability.otlp.** -> openinference",
 ]
 unmatched_ignore_imports_alerting = "none"
 
 [[tool.importlinter.contracts]]
 name = "C6b only observability.tracing imports observability.otlp"
 type = "protected"
-protected_modules = ["graph_agent._internal.observability.otlp"]
-allowed_importers = ["graph_agent._internal.observability.tracing"]
+protected_modules = ["ranvier._internal.observability.otlp"]
+allowed_importers = ["ranvier._internal.observability.tracing"]
 
 [[tool.importlinter.contracts]]
 name = "C2b examples use only the public facade"
 type = "forbidden"
 source_modules = ["examples"]
-forbidden_modules = ["graph_agent._internal"]
+forbidden_modules = ["ranvier._internal"]
 # The facade itself imports _internal: only a direct import by an example is a violation.
 allow_indirect_imports = true

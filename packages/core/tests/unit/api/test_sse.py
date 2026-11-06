@@ -10,10 +10,10 @@ from typing import Any
 
 import pytest
 
-from graph_agent._internal.api import routes
-from graph_agent._internal.api.routes import _frames, _SseResponse
-from graph_agent._internal.runtime.events import EndEvent, UpdatesEvent, UsageTotals
-from graph_agent._internal.runtime.runner import ActiveRuns
+from ranvier._internal.api import routes
+from ranvier._internal.api.routes import _frames, _SseResponse
+from ranvier._internal.runtime.events import EndEvent, UpdatesEvent, UsageTotals
+from ranvier._internal.runtime.runner import ActiveRuns
 
 
 class Tracked:

@@ -8,10 +8,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 
-from graph_agent._internal.bootstrap import ShutdownBudget
-from graph_agent._internal.runtime import runner
-from graph_agent._internal.runtime.context import RunContext
-from graph_agent._internal.runtime.events import (
+from ranvier._internal.bootstrap import ShutdownBudget
+from ranvier._internal.runtime import runner
+from ranvier._internal.runtime.context import RunContext
+from ranvier._internal.runtime.events import (
     CustomEvent,
     EndEvent,
     ErrorEvent,
@@ -23,8 +23,8 @@ from graph_agent._internal.runtime.events import (
     UsageTotals,
     ValuesEvent,
 )
-from graph_agent._internal.runtime.flows import CompiledFlow
-from graph_agent._internal.runtime.runner import (
+from ranvier._internal.runtime.flows import CompiledFlow
+from ranvier._internal.runtime.runner import (
     ActiveRuns,
     execute_run,
     run_config,
@@ -32,13 +32,13 @@ from graph_agent._internal.runtime.runner import (
     start_drain,
     stream_graph,
 )
-from graph_agent._internal.runtime.runs import (
+from ranvier._internal.runtime.runs import (
     ClaimOutcome,
     ErrorCode,
     RunError,
     RunStatus,
 )
-from graph_agent._internal.usage import Counts
+from ranvier._internal.usage import Counts
 from unit.runtime._runner_doubles import (
     CHAIN,
     FLOW_VERSION,
@@ -306,7 +306,7 @@ async def test_initial_input_recovery_skips_the_interrupt_rule() -> None:
 
 def test_run_config_drops_reserved_client_metadata() -> None:
     client = {
-        "graph_agent_agent": "spoofed",
+        "ranvier_agent": "spoofed",
         "ls_provider": "x",
         "langgraph_node": "x",
         "team": "billing",

@@ -1,7 +1,6 @@
 name: CI
 
-# Host-specific file: GitHub Actions was chosen because agintis uses it; the real git host is
-# not decided (design.md section 2). The logic lives in scripts/ so it ports as-is.
+# Host-specific file: the repo lives on GitHub (github.com/Wysted/ranvier). The logic lives in scripts/ so it ports as-is.
 on:
   push:
     branches: [main]
@@ -39,19 +38,19 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
       # A missing Postgres fails the integration tests instead of skipping them
       # (see packages/core/tests/integration/conftest.py).
-      GRAPH_AGENT_REQUIRE_SERVICES: "1"
+      RANVIER_REQUIRE_SERVICES: "1"
     services:
       # Same image and credentials as docker-compose.yml; host port 25432 is the fixtures' default.
       db:
         image: pgvector/pgvector:pg18
         env:
-          POSTGRES_USER: graph_agent
-          POSTGRES_PASSWORD: graph_agent
-          POSTGRES_DB: graph_agent
+          POSTGRES_USER: ranvier
+          POSTGRES_PASSWORD: ranvier
+          POSTGRES_DB: ranvier
         ports:
           - 25432:5432
         options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U graph_agent -d graph_agent"
+          --health-cmd "pg_isready -h 127.0.0.1 -U ranvier -d ranvier"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10

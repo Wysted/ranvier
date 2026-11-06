@@ -21,11 +21,11 @@ The Procrastinate app factory, deferral by task name, and the worker task that r
 - design.md §8 rows "Run admission" (worker concurrency) and "Postgres connections"
 
 ## Scope: files this task may create or edit
-- packages/core/src/graph_agent/_internal/queue.py
-- packages/core/src/graph_agent/_internal/worker.py
+- packages/core/src/ranvier/_internal/queue.py
+- packages/core/src/ranvier/_internal/worker.py
 - packages/core/tests/integration/test_queue_worker.py
 Shared files (append-only, keep edits minimal to avoid merge conflicts):
-- packages/core/src/graph_agent/_internal/bootstrap.py (append only: build the Procrastinate app, set `container.queue` as a `RunQueue`; T33 appends in the same wave)
+- packages/core/src/ranvier/_internal/bootstrap.py (append only: build the Procrastinate app, set `container.queue` as a `RunQueue`; T33 appends in the same wave)
 
 ## Out of scope
 - Sweep, prune, cron tasks and the `worker`/`crons` commands (T25)

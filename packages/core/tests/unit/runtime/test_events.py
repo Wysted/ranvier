@@ -9,7 +9,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from graph_agent._internal.runtime.events import (
+from ranvier._internal.runtime.events import (
     CustomEvent,
     InterruptEvent,
     InterruptItem,

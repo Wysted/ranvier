@@ -3,8 +3,8 @@ from typing import Any
 
 import pytest
 
-from graph_agent._internal.agents.spec import AgentSpec
-from graph_agent._internal.runtime.context import FlowContextImpl, RunContext
+from ranvier._internal.agents.spec import AgentSpec
+from ranvier._internal.runtime.context import FlowContextImpl, RunContext
 
 SPEC = AgentSpec(name="a", profile="p")
 

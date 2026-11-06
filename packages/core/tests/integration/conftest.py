@@ -16,11 +16,11 @@ import pytest
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 
-TEST_DATABASE_URL_ENV = "GRAPH_AGENT_TEST_DATABASE_URL"
-REQUIRE_SERVICES_ENV = "GRAPH_AGENT_REQUIRE_SERVICES"
+TEST_DATABASE_URL_ENV = "RANVIER_TEST_DATABASE_URL"
+REQUIRE_SERVICES_ENV = "RANVIER_REQUIRE_SERVICES"
 TRUTHY_VALUES = frozenset({"1", "true", "yes"})
 # Matches the dev credentials and host port in docker-compose.yml.
-DEFAULT_DATABASE_URL = "postgresql://graph_agent:graph_agent@127.0.0.1:25432/graph_agent"
+DEFAULT_DATABASE_URL = "postgresql://ranvier:ranvier@127.0.0.1:25432/ranvier"
 CONNECT_TIMEOUT_SECONDS = 3
 INTEGRATION_DIR = Path(__file__).parent.resolve()
 
@@ -47,12 +47,12 @@ def _connect(url: str) -> psycopg.Connection[tuple[object, ...]]:
 def database_url() -> Iterator[str]:
     """URL of a throwaway database, created for the session and dropped at the end.
 
-    `GRAPH_AGENT_TEST_DATABASE_URL` (admin connection, may create databases) must be a
+    `RANVIER_TEST_DATABASE_URL` (admin connection, may create databases) must be a
     `postgresql://` URL, not key/value conninfo: the result is that URL with its path
     replaced by the throwaway database name.
     """
     admin_url = os.environ.get(TEST_DATABASE_URL_ENV, DEFAULT_DATABASE_URL)
-    name = f"graph_agent_test_{uuid.uuid4().hex[:12]}"
+    name = f"ranvier_test_{uuid.uuid4().hex[:12]}"
     try:
         admin = _connect(admin_url)
     except psycopg.OperationalError as exc:
@@ -77,7 +77,7 @@ def database_url() -> Iterator[str]:
 def clean_database(database_url: str) -> Iterator[str]:
     """`database_url` with every non-system schema dropped and an empty `public` recreated.
 
-    Covers `public` and any schema the code creates (e.g. `graph_agent`, design section 10).
+    Covers `public` and any schema the code creates (e.g. `ranvier`, design section 10).
     """
     with _connect(database_url) as conn:
         schemas = conn.execute(

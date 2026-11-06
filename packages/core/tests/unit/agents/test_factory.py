@@ -15,16 +15,16 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.types import Command, interrupt
 
-from graph_agent import as_tool
-from graph_agent._internal.agents.factory import AgentBuildError, build_agent
-from graph_agent._internal.agents.mcp import McpSourceError
-from graph_agent._internal.agents.spec import AgentSpec
-from graph_agent._internal.agents.tools import ToolRegistry
-from graph_agent._internal.config.manifest import LlmSettings, ToolSpec
-from graph_agent._internal.config.settings import LimitsSettings
-from graph_agent._internal.llm import LlmRegistry
-from graph_agent._internal.usage import AGENT_METADATA_KEY
-from graph_agent.testing import FakeChatModel
+from ranvier import as_tool
+from ranvier._internal.agents.factory import AgentBuildError, build_agent
+from ranvier._internal.agents.mcp import McpSourceError
+from ranvier._internal.agents.spec import AgentSpec
+from ranvier._internal.agents.tools import ToolRegistry
+from ranvier._internal.config.manifest import LlmSettings, ToolSpec
+from ranvier._internal.config.settings import LimitsSettings
+from ranvier._internal.llm import LlmRegistry
+from ranvier._internal.usage import AGENT_METADATA_KEY
+from ranvier.testing import FakeChatModel
 
 LIMIT_S = 0.05
 LONGER_THAN_LIMIT_S = 0.3
@@ -171,7 +171,7 @@ async def test_as_tool_round_trip() -> None:
 
 def test_facade_does_not_import_langchain() -> None:
     code = (
-        "import sys, graph_agent; "
+        "import sys, ranvier; "
         "sys.exit(any(m.startswith(('langchain', 'langgraph')) for m in sys.modules))"
     )
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0

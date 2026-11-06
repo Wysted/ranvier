@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from graph_agent._internal import cli
+from ranvier._internal import cli
 
 
 def test_logging_defaults_to_info_when_root_has_no_handlers(
