@@ -19,7 +19,12 @@ fresh_venv() {
 # Member directories from [tool.uv.workspace].members (globs expanded, one per line).
 workspace_members() {
     # A uv-resolved interpreter is >=3.13 (has tomllib); the system python3 may predate it.
-    "$(uv python find)" -I - "$ROOT" <<'PY'
+    # `uv python find` ignores UV_PYTHON (it reads .python-version), so pass it explicitly.
+    # Assigned first, with `|| return`: a failed substitution in command position runs an empty
+    # command (exit 127), and command substitutions do not inherit `set -e`.
+    local py
+    py="$(uv python find ${UV_PYTHON:+"$UV_PYTHON"})" || return 1
+    "$py" -I - "$ROOT" <<'PY'
 import sys
 import tomllib
 from pathlib import Path
