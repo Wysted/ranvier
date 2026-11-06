@@ -3,6 +3,7 @@ name = "ranvier-examples"
 version = "0.0.0"
 description = "Example flows for ranvier (not published)"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = ["ranvier"]
 
 [tool.uv.sources]
