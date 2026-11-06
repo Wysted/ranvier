@@ -93,6 +93,8 @@ jobs:
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           enable-cache: true
+      # `uv python find` (used by the check script) never downloads; install the matrix Python first.
+      - run: uv python install "$UV_PYTHON"
       - name: Per-member clean install
         run: scripts/ci-install-check.sh members
       - name: Git-subdirectory install
