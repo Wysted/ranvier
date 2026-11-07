@@ -2,8 +2,6 @@
 
 [Español](#español) | [English](#english)
 
-## Español
-
 ranvier es una plataforma para ejecutar agentes y flujos de IA, escritos como `StateGraph` planos de LangGraph 1.x, en producción. Se instala como paquete Python (import `ranvier`, CLI `ranvier`): registra los flujos desde un manifiesto, los ejecuta de forma durable sobre Postgres y los expone por CLI, HTTP/SSE y un worker de cola. Los productos dependen del paquete por tag de git y solo contienen sus flujos, herramientas y configuración.
 
 Características:
