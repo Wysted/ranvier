@@ -87,7 +87,7 @@ Parte del código se escribió con agentes de IA; los briefs de las tareas está
 
 [MIT](LICENSE).
 
-## English
+
 
 ranvier is a platform for running agents and AI flows, written as plain LangGraph 1.x `StateGraph`s, in production. It installs as a Python package (import `ranvier`, CLI `ranvier`): it registers flows from a manifest, runs them durably on Postgres and exposes them through the CLI, HTTP/SSE and a queue worker. Products depend on the package by git tag and only hold their own flows, tools and configuration.
 
